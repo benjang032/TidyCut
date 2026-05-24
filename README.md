@@ -1,5 +1,7 @@
 # TidyCut
 
+![TidyCut cover](assets/tidycut-cover.png)
+
 Edit video like a notepad.
 
 Drop in a clip, transcribe it locally, select words or pauses, cut what you do
