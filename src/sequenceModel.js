@@ -74,11 +74,37 @@ function rangeToSegment(start, end) {
 
 function getCutRanges(clip, range) {
   const cut = getExplicitCut(clip);
-  return (clip?.items || [])
-    .filter((item) => cut.has(item.id))
-    .map((item) => clipSegmentToRange({ source_start: item.start, source_end: item.end }, range))
-    .filter(Boolean)
-    .sort((a, b) => a.source_start - b.source_start || a.source_end - b.source_end);
+  const ranges = [];
+  let current = null;
+  const items = [...(clip?.items || [])].sort(
+    (a, b) =>
+      finiteNumber(a?.start) - finiteNumber(b?.start) ||
+      finiteNumber(a?.end) - finiteNumber(b?.end)
+  );
+
+  for (const item of items) {
+    if (!cut.has(item.id)) {
+      current = null;
+      continue;
+    }
+
+    const rangeForItem = clipSegmentToRange(
+      { source_start: item.start, source_end: item.end },
+      range
+    );
+    if (!rangeForItem) continue;
+
+    if (!current) {
+      current = { ...rangeForItem };
+      ranges.push(current);
+    } else {
+      current.source_end = Math.max(current.source_end, rangeForItem.source_end);
+    }
+  }
+
+  return mergeRanges(ranges).sort(
+    (a, b) => a.source_start - b.source_start || a.source_end - b.source_end
+  );
 }
 
 function mergeRanges(ranges) {
@@ -191,6 +217,10 @@ function getTrimmedDurations(clip) {
 
 export function getClipTimeline(clip) {
   return getTrimmedTimeline(clip);
+}
+
+export function getClipCutRanges(clip) {
+  return getCutRanges(clip, getClipTrimRange(clip));
 }
 
 export function getClipDurations(clip) {

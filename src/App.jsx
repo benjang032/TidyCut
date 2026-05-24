@@ -122,6 +122,7 @@ export default function App() {
   const videoRef = useRef(null);
   const previewAudioRef = useRef(null);
   const fileInputRef = useRef(null);
+  const projectNameInputRef = useRef(null);
   const draggingRef = useRef(false);
   const activeChipRef = useRef(null);
   const transcriptRef = useRef(null);
@@ -133,6 +134,7 @@ export default function App() {
   const projectBootstrappedRef = useRef(false);
   const lastSavedProjectSignatureRef = useRef("");
   const saveProjectTimerRef = useRef(null);
+  const saveProjectControllerRef = useRef(null);
   const splitActionRef = useRef(null);
   const pendingMediaSeekRef = useRef(null);
   const scrubbingRef = useRef(false);
@@ -404,7 +406,9 @@ export default function App() {
     async (projectId, options = {}) => {
       if (!projectId) return;
       try {
-        await saveCurrentProjectNow().catch(() => {});
+        if (options.skipSavePrevious !== true) {
+          await saveCurrentProjectNow().catch(() => {});
+        }
         setProjectSaveState("loading");
         setProjectError("");
 
@@ -447,10 +451,25 @@ export default function App() {
     [resetProjectRuntimeState, saveCurrentProjectNow]
   );
 
+  const focusProjectName = useCallback(() => {
+    requestAnimationFrame(() => {
+      const input = projectNameInputRef.current;
+      if (!input) return;
+      input.focus();
+      try {
+        input.select();
+      } catch {
+        // Older browsers may reject select() on certain input types.
+      }
+    });
+  }, []);
+
   const createNewEditProject = useCallback(
     async (options = {}) => {
       try {
-        await saveCurrentProjectNow().catch(() => {});
+        if (options.skipSavePrevious !== true) {
+          await saveCurrentProjectNow().catch(() => {});
+        }
         setProjectSaveState("loading");
         setProjectError("");
 
@@ -501,6 +520,7 @@ export default function App() {
         setProjectSaveState("saved");
         setProjectError("");
         if (options.closeBrowser !== false) setProjectBrowserOpen(false);
+        if (options.focusName !== false) focusProjectName();
       } catch (caught) {
         projectBootstrappedRef.current = true;
         setProjectSaveState("error");
@@ -508,7 +528,59 @@ export default function App() {
         throw caught;
       }
     },
-    [resetProjectRuntimeState, saveCurrentProjectNow]
+    [focusProjectName, resetProjectRuntimeState, saveCurrentProjectNow]
+  );
+
+  const deleteEditProject = useCallback(
+    async (projectId) => {
+      if (!projectId) return;
+      const wasCurrent = currentProjectRef.current?.id === projectId;
+      if (wasCurrent) {
+        if (saveProjectTimerRef.current) {
+          window.clearTimeout(saveProjectTimerRef.current);
+          saveProjectTimerRef.current = null;
+        }
+        saveProjectControllerRef.current?.abort();
+        saveProjectControllerRef.current = null;
+      }
+      const response = await fetch(`${EDIT_PROJECTS_URL}/${projectId}`, { method: "DELETE" });
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = null;
+      }
+      if (!response.ok) {
+        const message = payload?.error || `Failed to delete project (${response.status}).`;
+        setProjectError(message);
+        throw new Error(message);
+      }
+
+      setProjectError("");
+      let nextSummaries = [];
+      setProjectSummaries((summaries) => {
+        nextSummaries = summaries.filter((project) => project.id !== projectId);
+        return nextSummaries;
+      });
+
+      if (wasCurrent) {
+        const fallback = nextSummaries.find((project) => project.id !== projectId);
+        lastSavedProjectSignatureRef.current = "";
+        if (fallback?.id) {
+          await loadEditProject(fallback.id, {
+            closeBrowser: false,
+            skipSavePrevious: true,
+          });
+        } else {
+          await createNewEditProject({
+            closeBrowser: false,
+            focusName: false,
+            skipSavePrevious: true,
+          });
+        }
+      }
+    },
+    [createNewEditProject, loadEditProject]
   );
 
   const syncPreviewAudio = useCallback(
@@ -888,7 +960,7 @@ export default function App() {
           return;
         }
 
-        await createNewEditProject({ closeBrowser: false });
+        await createNewEditProject({ closeBrowser: false, focusName: false });
       } catch (caught) {
         if (cancelled) return;
         projectBootstrappedRef.current = true;
@@ -910,6 +982,7 @@ export default function App() {
   }, []);
 
   // Debounced autosave for project sequence edits, model choice, audio settings, and project name.
+  // Snappier debounce so transcription output is durable before users can close the tab.
   useEffect(() => {
     if (!projectBootstrappedRef.current || !currentProjectDocument?.id) return undefined;
 
@@ -921,6 +994,7 @@ export default function App() {
     setProjectError("");
 
     const controller = new AbortController();
+    saveProjectControllerRef.current = controller;
     saveProjectTimerRef.current = window.setTimeout(() => {
       fetch(`${EDIT_PROJECTS_URL}/${currentProjectDocument.id}`, {
         method: "PUT",
@@ -953,11 +1027,43 @@ export default function App() {
           setProjectSaveState("error");
           setProjectError(caught instanceof Error ? caught.message : String(caught));
         });
-    }, 700);
+    }, 300);
 
     return () => {
       controller.abort();
       if (saveProjectTimerRef.current) window.clearTimeout(saveProjectTimerRef.current);
+    };
+  }, [currentProjectDocument]);
+
+  // Best-effort flush on tab close / hide so freshly transcribed work isn't lost
+  // during the autosave debounce window.
+  useEffect(() => {
+    const flush = () => {
+      const pendingDocument = currentProjectDocument;
+      if (!pendingDocument?.id) return;
+      const signature = projectDocumentSignature(pendingDocument);
+      if (signature === lastSavedProjectSignatureRef.current) return;
+      try {
+        fetch(`${EDIT_PROJECTS_URL}/${pendingDocument.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(pendingDocument),
+          keepalive: true,
+        });
+        lastSavedProjectSignatureRef.current = signature;
+      } catch {
+        // Best-effort only — browser may have already torn the connection.
+      }
+    };
+
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [currentProjectDocument]);
 
@@ -1568,6 +1674,7 @@ export default function App() {
     <main className="app">
       <Topbar
         fileInputRef={fileInputRef}
+        projectNameInputRef={projectNameInputRef}
         status={status}
         statusText={statusText}
         statusTone={statusTone}
@@ -1685,6 +1792,7 @@ export default function App() {
         onClose={() => setProjectBrowserOpen(false)}
         onOpenProject={loadEditProject}
         onNewProject={() => createNewEditProject()}
+        onDeleteProject={deleteEditProject}
         onRefresh={() => refreshProjectSummaries().catch(() => {})}
       />
     </main>

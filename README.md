@@ -29,6 +29,21 @@ This project is local-first by design. The easiest public demo today is a short
 screen recording plus the GitHub repo; the easiest nontechnical install path is
 a signed desktop app release, not a hosted cloud deployment.
 
+## Current Deployment Status
+
+As of May 24, 2026, the working deployment target is the local single-server
+build:
+
+```bash
+npm run dev
+```
+
+That command builds the Vite frontend and serves the static app plus Express API
+from `http://localhost:5173`. This is the path used for current testing and
+demo recording. There is no hosted cloud deployment configured because source
+video, transcription, thumbnails, audio previews, and FFmpeg renders are all
+designed to run on the user's machine.
+
 ## Distribution Plan
 
 For nontechnical testers, package this as a desktop app for macOS first. A

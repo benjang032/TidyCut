@@ -19,6 +19,7 @@ function stringOrNull(value) {
 }
 
 function finiteNumberOrNull(value) {
+  if (value == null || (typeof value === "string" && value.trim() === "")) return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
@@ -54,6 +55,13 @@ function normalizeCut(cut) {
   return values.map(stringOrNull).filter(Boolean);
 }
 
+function normalizeTrimEnd(value, trimStart, duration) {
+  const trimEnd = finiteNumberOrNull(value);
+  if (trimEnd == null) return null;
+  if (trimEnd === 0 && duration > trimStart) return null;
+  return trimEnd;
+}
+
 export function cleanProjectName(name) {
   return stringOrNull(name)?.slice(0, 120) || DEFAULT_PROJECT_NAME;
 }
@@ -75,6 +83,8 @@ export function serializeClipForProject(clip, index = 0) {
   const items = Array.isArray(clip?.items) ? clip.items.map(normalizeItem) : [];
   const cut = normalizeCut(clip?.cut);
   const status = RESTORABLE_STATUSES.has(clip?.status) ? clip.status : items.length ? "ready" : "queued";
+  const duration = finiteNumber(clip?.duration);
+  const trimStart = finiteNumber(clip?.trimStart);
 
   return {
     id,
@@ -86,12 +96,12 @@ export function serializeClipForProject(clip, index = 0) {
     source: cloneJsonObject(clip?.source),
     fileName: stringOrNull(clip?.fileName) || "Untitled clip",
     sourceMode: stringOrNull(clip?.sourceMode) || stringOrNull(clip?.source?.mode) || "managed",
-    duration: finiteNumber(clip?.duration),
+    duration,
     wordCount: finiteNumberOrNull(clip?.wordCount),
     items,
     cut,
-    trimStart: finiteNumber(clip?.trimStart),
-    trimEnd: finiteNumberOrNull(clip?.trimEnd),
+    trimStart,
+    trimEnd: normalizeTrimEnd(clip?.trimEnd, trimStart, duration),
     status,
     error: stringOrNull(clip?.error),
   };

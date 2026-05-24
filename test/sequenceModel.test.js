@@ -155,6 +155,65 @@ describe("sequence model", () => {
     assert.equal(Number(durations.kept.toFixed(2)), 14.82);
   });
 
+  it("cuts the full span between consecutive cut transcript items", () => {
+    const clip = {
+      id: "clip-cut-adjacent-words",
+      projectId: "project-cut-adjacent-words",
+      fileName: "cut-adjacent-words.mov",
+      duration: 4,
+      trimStart: 0,
+      trimEnd: null,
+      items: [
+        { id: "w1", kind: "word", text: "keep", start: 0, end: 0.5 },
+        { id: "w2", kind: "word", text: "drop", start: 1, end: 1.2 },
+        { id: "w3", kind: "word", text: "these", start: 1.35, end: 1.5 },
+        { id: "w4", kind: "word", text: "tail", start: 2, end: 2.4 },
+      ],
+      cut: new Set(["w2", "w3"]),
+      status: "ready",
+    };
+
+    assert.deepEqual(getClipTimeline(clip), [
+      { source_start: 0, source_end: 1 },
+      { source_start: 1.5, source_end: 4 },
+    ]);
+    assert.deepEqual(getSequenceDurations([clip]), {
+      total: 4,
+      cut: 0.5,
+      kept: 3.5,
+    });
+  });
+
+  it("keeps an uncut pause block between separately cut words", () => {
+    const clip = {
+      id: "clip-keep-uncut-pause",
+      projectId: "project-keep-uncut-pause",
+      fileName: "keep-uncut-pause.mov",
+      duration: 4,
+      trimStart: 0,
+      trimEnd: null,
+      items: [
+        { id: "w1", kind: "word", text: "keep", start: 0, end: 0.5 },
+        { id: "w2", kind: "word", text: "drop", start: 1, end: 1.2 },
+        { id: "g1", kind: "gap", text: "", start: 1.2, end: 1.8 },
+        { id: "w3", kind: "word", text: "drop", start: 1.8, end: 2 },
+        { id: "w4", kind: "word", text: "tail", start: 2.5, end: 3 },
+      ],
+      cut: new Set(["w2", "w3"]),
+      status: "ready",
+    };
+
+    assert.deepEqual(getClipTimeline(clip), [
+      { source_start: 0, source_end: 1 },
+      { source_start: 1.2, source_end: 1.8 },
+      { source_start: 2, source_end: 4 },
+    ]);
+    const durations = getSequenceDurations([clip]);
+    assert.equal(durations.total, 4);
+    assert.equal(Number(durations.cut.toFixed(1)), 0.4);
+    assert.equal(Number(durations.kept.toFixed(1)), 3.6);
+  });
+
   it("builds a visible sequence transcript across trimmed clips", () => {
     const items = buildSequenceTranscriptItems([
       {

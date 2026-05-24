@@ -30,6 +30,7 @@ describe("project model", () => {
 
     assert.equal(document.clips[0].videoUrl, "/api/projects/media-a/video");
     assert.deepEqual(document.clips[0].cut, ["w1"]);
+    assert.equal(document.clips[0].trimEnd, null);
     assert.equal("_pending" in document.clips[0], false);
   });
 
@@ -56,6 +57,38 @@ describe("project model", () => {
     assert.equal(hydrated.clips[0].videoUrl, "/api/projects/media-a/video");
     assert.equal(hydrated.clips[0].cut instanceof Set, true);
     assert.equal(hydrated.clips[0].cut.has("w1"), true);
+  });
+
+  it("recovers legacy untrimmed clips saved with a zero trim end", () => {
+    const hydrated = hydrateProjectDocument({
+      id: "edit-a",
+      activeClipId: "clip-a",
+      clips: [
+        {
+          id: "clip-a",
+          projectId: "media-a",
+          fileName: "source.mov",
+          duration: 12,
+          trimStart: 0,
+          trimEnd: 0,
+          items: [{ id: "w1", kind: "word", text: "hello", start: 3, end: 4 }],
+          cut: [],
+        },
+        {
+          id: "clip-b",
+          projectId: "media-a",
+          fileName: "source.mov",
+          duration: 12,
+          trimStart: 3,
+          trimEnd: 0,
+          items: [{ id: "w2", kind: "word", text: "again", start: 5, end: 6 }],
+          cut: [],
+        },
+      ],
+    });
+
+    assert.equal(hydrated.clips[0].trimEnd, null);
+    assert.equal(hydrated.clips[1].trimEnd, null);
   });
 
   it("marks unsaved upload clips as unrecoverable after reload", () => {

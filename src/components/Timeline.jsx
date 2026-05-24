@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatClock } from "../editorModel";
-import { getClipTrimRange, getClipVisibleDuration } from "../sequenceModel";
+import { getClipCutRanges, getClipTrimRange, getClipVisibleDuration } from "../sequenceModel";
 
 const CLIP_MIME = "application/x-local-editor-clip";
 const PLACEHOLDER_DURATION_SECONDS = 30;
@@ -766,23 +766,19 @@ function ClipMedia({ clip, mediaAsset, trimStart, trimEnd }) {
 }
 
 function CutOverlays({ clip, pps, trimStart, trimEnd }) {
-  const items = clip.items || [];
-  if (!items.length) return null;
-  const cutSet = clip.cut instanceof Set ? clip.cut : new Set(clip.cut || []);
-  const overlays = [];
-  for (const item of items) {
-    if (!cutSet.has(item.id)) continue;
-    if (item.end <= trimStart || item.start >= trimEnd) continue;
-    const start = Math.max(item.start, trimStart);
-    const end = Math.min(item.end, trimEnd);
-    overlays.push(
-      <div
-        key={item.id}
-        className="tl-clip-cut"
-        style={{ left: (start - trimStart) * pps, width: Math.max(1, (end - start) * pps) }}
-      />
-    );
-  }
+  const overlays = getClipCutRanges(clip)
+    .filter((range) => range.source_end > trimStart && range.source_start < trimEnd)
+    .map((range) => {
+      const start = Math.max(range.source_start, trimStart);
+      const end = Math.min(range.source_end, trimEnd);
+      return (
+        <div
+          key={`${range.source_start}:${range.source_end}`}
+          className="tl-clip-cut"
+          style={{ left: (start - trimStart) * pps, width: Math.max(1, (end - start) * pps) }}
+        />
+      );
+    });
   return <>{overlays}</>;
 }
 

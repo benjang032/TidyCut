@@ -269,6 +269,23 @@ app.put("/api/edit-projects/:editProjectId", async (request, response) => {
   }
 });
 
+app.delete("/api/edit-projects/:editProjectId", async (request, response) => {
+  const projectDir = resolveEditProjectDir(request.params.editProjectId);
+  if (!projectDir) {
+    response.status(400).json({ error: "Invalid edit project id." });
+    return;
+  }
+
+  try {
+    await fs.rm(projectDir, { recursive: true, force: true });
+    response.json({ id: request.params.editProjectId, deleted: true });
+  } catch (error) {
+    response.status(500).json({
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
 app.post("/api/projects/:projectId/transcribe", async (request, response) => {
   const projectDir = resolveProjectDir(request.params.projectId);
   if (!projectDir) {
@@ -410,6 +427,7 @@ function cleanText(value, fallback = null, maxLength = 240) {
 }
 
 function finiteNumberOrNull(value) {
+  if (value == null || (typeof value === "string" && value.trim() === "")) return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
@@ -451,6 +469,13 @@ function cleanEditProjectCut(cut, validItemIds) {
   return result;
 }
 
+function cleanEditProjectTrimEnd(value, trimStart, duration) {
+  const trimEnd = finiteNumberOrNull(value);
+  if (trimEnd == null) return null;
+  if (trimEnd === 0 && duration > trimStart) return null;
+  return trimEnd;
+}
+
 function cleanEditProjectClip(clip, index) {
   const items = Array.isArray(clip?.items)
     ? clip.items.slice(0, 50000).map((item, itemIndex) => cleanEditProjectItem(item, itemIndex))
@@ -458,6 +483,8 @@ function cleanEditProjectClip(clip, index) {
   const itemIds = new Set(items.map((item) => item.id));
   const cut = cleanEditProjectCut(clip?.cut, itemIds);
   const projectId = cleanText(clip?.projectId, null, 160);
+  const duration = Math.max(0, finiteNumber(clip?.duration));
+  const trimStart = Math.max(0, finiteNumber(clip?.trimStart));
   const status = ["ready", "queued", "transcribing", "probing", "error"].includes(clip?.status)
     ? clip.status
     : items.length
@@ -474,12 +501,12 @@ function cleanEditProjectClip(clip, index) {
     source: cleanJsonObject(clip?.source),
     fileName: cleanText(clip?.fileName, "Untitled clip", 260),
     sourceMode: cleanText(clip?.sourceMode || clip?.source?.mode, "managed", 80),
-    duration: Math.max(0, finiteNumber(clip?.duration)),
+    duration,
     wordCount: finiteNumberOrNull(clip?.wordCount),
     items,
     cut,
-    trimStart: Math.max(0, finiteNumber(clip?.trimStart)),
-    trimEnd: finiteNumberOrNull(clip?.trimEnd),
+    trimStart,
+    trimEnd: cleanEditProjectTrimEnd(clip?.trimEnd, trimStart, duration),
     status,
     error: cleanText(clip?.error, null, 2000),
   };

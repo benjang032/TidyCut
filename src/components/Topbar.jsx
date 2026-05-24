@@ -15,6 +15,7 @@ import { formatClock } from "../editorModel";
 
 export function Topbar({
   fileInputRef,
+  projectNameInputRef,
   status,
   statusText,
   statusTone,
@@ -46,6 +47,7 @@ export function Topbar({
         saveState={projectSaveState}
         error={projectError}
         disabled={isBusy}
+        nameInputRef={projectNameInputRef}
         onNameChange={onProjectNameChange}
         onNewProject={onNewProject}
         onOpenProjectBrowser={onOpenProjectBrowser}
@@ -118,6 +120,7 @@ function ProjectControl({
   saveState,
   error,
   disabled,
+  nameInputRef,
   onNameChange,
   onNewProject,
   onOpenProjectBrowser,
@@ -130,16 +133,27 @@ function ProjectControl({
     return "Draft";
   })();
 
+  const handleKeyDown = (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      event.currentTarget.blur();
+    }
+  };
+
   return (
     <div className="project-control">
       <div className="project-name-wrap">
+        <span className="project-name-kicker">Project</span>
         <input
+          ref={nameInputRef}
           className="project-name-input"
           value={name || ""}
           aria-label="Project name"
           placeholder="Untitled project"
+          spellCheck={false}
           disabled={disabled || saveState === "loading"}
           onChange={(event) => onNameChange(event.target.value)}
+          onKeyDown={handleKeyDown}
         />
         <span
           className={`project-save-state is-${saveState || "idle"}`}
@@ -157,6 +171,7 @@ function ProjectControl({
           className="btn ghost"
           onClick={onNewProject}
           disabled={disabled || saveState === "loading"}
+          title="Start a fresh project (current edits autosave)"
         >
           <FilePlus2 size={14} />
           <span>New</span>
@@ -166,9 +181,10 @@ function ProjectControl({
           className="btn ghost"
           onClick={onOpenProjectBrowser}
           disabled={disabled || saveState === "loading"}
+          title="Browse saved projects"
         >
           <FolderOpen size={14} />
-          <span>Open</span>
+          <span>Projects</span>
         </button>
       </div>
     </div>
