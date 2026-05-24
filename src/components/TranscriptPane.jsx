@@ -1,5 +1,6 @@
+import { Fragment } from "react";
 import { FileVideo, Loader2, Scissors, Undo2, X } from "lucide-react";
-import { formatPauseLabel } from "../editorModel";
+import { formatClock, formatPauseLabel } from "../editorModel";
 
 export function TranscriptPane({
   hasTranscript,
@@ -42,18 +43,23 @@ export function TranscriptPane({
             className="transcript-doc"
             onPointerLeave={onTranscriptPointerLeave}
           >
-            {items.map((item) => (
-              <Token
-                key={item.id}
-                item={item}
-                isSelected={selection.has(item.id)}
-                isCut={cut.has(item.id)}
-                isActive={activeId === item.id}
-                activeRef={activeId === item.id ? activeChipRef : null}
-                onPointerDown={onTokenPointerDown}
-                onPointerEnter={onTokenPointerEnter}
-              />
-            ))}
+            {items.map((item, index) => {
+              const startsClip = item.clipId && item.clipId !== items[index - 1]?.clipId;
+              return (
+                <Fragment key={item.id}>
+                  {startsClip ? <ClipBreak item={item} /> : null}
+                  <Token
+                    item={item}
+                    isSelected={selection.has(item.id)}
+                    isCut={cut.has(item.id)}
+                    isActive={activeId === item.id}
+                    activeRef={activeId === item.id ? activeChipRef : null}
+                    onPointerDown={onTokenPointerDown}
+                    onPointerEnter={onTokenPointerEnter}
+                  />
+                </Fragment>
+              );
+            })}
           </div>
         </>
       ) : (
@@ -73,6 +79,17 @@ export function TranscriptPane({
         <SelectionBar stats={selectionStats} onCut={onCut} onRestore={onRestore} onClear={onClear} />
       ) : null}
     </section>
+  );
+}
+
+function ClipBreak({ item }) {
+  return (
+    <span className="transcript-clip-break">
+      <span className="transcript-clip-name" title={item.clipName}>
+        {item.clipName || `Clip ${item.clipIndex + 1}`}
+      </span>
+      <span className="transcript-clip-time">{formatClock(item.sequenceStart || 0)}</span>
+    </span>
   );
 }
 

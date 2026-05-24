@@ -1,14 +1,14 @@
 # Local Video Editor
 
 A local-first video transcript editor. Drop in a video, transcribe it on your
-machine, and edit the transcript like a notepad that stays tied to the source
-video.
+machine, edit each transcript like a notepad that stays tied to the source
+video, then arrange file references into a simple sequence for export.
 
 No hosted transcription API is required. Video files, extracted audio,
 transcripts, edit decisions, and model caches stay on your machine unless you
 move them yourself.
 
-## Run
+## Try It Locally
 
 ```bash
 npm install
@@ -19,25 +19,73 @@ npm run dev
 
 Open `http://localhost:5173`.
 
+You also need FFmpeg available on your machine:
+
+```bash
+brew install ffmpeg
+```
+
+This project is local-first by design. The easiest public demo today is a short
+screen recording plus the GitHub repo; the easiest nontechnical install path is
+a signed desktop app release, not a hosted cloud deployment.
+
+## Distribution Plan
+
+For nontechnical testers, package this as a desktop app for macOS first. A
+desktop build can bundle the web UI, local Node server, Python runtime, FFmpeg
+checks, and setup flow behind one app icon while still keeping video files and
+models on the user's machine.
+
+Recommended rollout:
+
+1. GitHub repo for developers and contributors.
+2. GitHub Releases with a signed/notarized macOS `.dmg` for creators who just
+   want to try it.
+3. A lightweight landing page with a video demo, screenshots, download link, and
+   privacy/storage explanation.
+4. Later, optional Docker packaging for technical users on Linux/Windows.
+
+A hosted deployment is not the best default for this app. Uploading large video
+files to a server would make the app slower, more expensive, less private, and
+harder to operate because transcription and rendering are long-running local
+compute jobs.
+
 ## What It Does
 
-Choose a video, click `Transcribe`, and the backend runs local MLX Whisper
-through `scripts/transcribe_local.py`. The transcript appears as editable
-timestamped text beside the video. Clicking a timestamp jumps the video to that
-line.
+Reference a local video path, click `Transcribe clip`, and the backend runs
+local MLX Whisper through `scripts/transcribe_local.py`. The transcript appears
+as editable timestamped text beside the video. Clicking a timestamp jumps the
+video to that line.
 
 Before transcription, the backend runs local Silero VAD and sends only detected
 speech ranges into MLX Whisper. The resulting word timestamps stay mapped to the
 original video timeline, so playback and cuts still line up with the source.
 
+Each transcribed video becomes a clip in the sequence strip. You can add more
+clips from local file references, fallback uploads, or recent local projects,
+select a clip to edit its transcript, reorder clips, remove clips, and download
+one stitched MP4.
+
+The editor also keeps an autosaved edit project for the whole workspace. Use
+`New` to start a clean edit project and `Open` to load previous sequence work;
+the current project is restored after a page reload.
+
 Generated project files are stored under:
 
 ```text
 projects/<project-id>/
-├── input.<ext>
+├── project.json
 ├── audio.wav
 └── transcript.json
+
+projects/_edit-projects/<edit-project-id>/
+└── edit-project.json
 ```
+
+When you use `Reference path`, the original video stays at its existing path.
+The project stores only metadata, extracted audio, transcript JSON, edit plans,
+and render outputs. `Upload copy` remains available as a fallback when you
+intentionally want the app to manage a copied source file.
 
 Whisper models are cached under `models/hf` by default. Silero VAD is installed
 from the pinned Python package in `requirements.txt`.
@@ -48,8 +96,14 @@ from the pinned Python package in `requirements.txt`.
 - Word-level timestamps for transcript-driven editing.
 - Silero VAD before transcription, so long silences do not confuse the model.
 - Model picker with size and tradeoff notes.
-- Text-first cut/restore workflow.
-- FFmpeg render path for exporting the edited video.
+- Local media references that avoid copying source video files.
+- Text-first cut/restore workflow per clip.
+- Multi-clip sequence strip for selecting, reordering, and removing clips.
+- Autosaved edit projects with New/Open workflow and reload restore.
+- FFmpeg render path for exporting the stitched edit.
+- Optional export-time voice denoise with DeepFilterNet3.
+- Optional export-time loudness normalization to -16 LUFS / -1.5 dBTP.
+- Background audio previews for the denoise/normalize toggles during playback.
 - Portable project folders for source video, extracted audio, transcript JSON,
   and outputs.
 
@@ -70,6 +124,27 @@ VAD is enabled by default. To compare against full-audio transcription:
 ```bash
 LOCAL_EDITOR_VAD=0 npm run dev
 ```
+
+The `Denoise` toggle uses DeepFilterNet3 for both preview playback and export.
+On first use, the backend downloads a platform-specific `deep-filter` runtime
+and the DeepFilterNet3 ONNX model into the project folder:
+
+```text
+models/denoise/deepfilternet/
+├── bin/deep-filter
+└── models/DeepFilterNet3_onnx.tar.gz
+```
+
+## Media Storage Model
+
+The editor keeps source media as referenced assets and stores splits, trims,
+reorders, transcript cuts, and audio settings as metadata. Splitting a clip does
+not copy the original video; it creates another timeline clip that points at the
+same source with a different source-time range.
+
+Generated files such as thumbnails, waveforms, denoised/normalized audio
+previews, and export renders live under the project/cache folders and can be
+regenerated from the original media.
 
 You can also move project/model storage to any local folder, including an
 external SSD:

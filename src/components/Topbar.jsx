@@ -1,29 +1,56 @@
-import { Check, ChevronDown, Clock, Copy, Download, Loader2, Play, Upload } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  AudioLines,
+  Check,
+  ChevronDown,
+  Copy,
+  Download,
+  FilePlus2,
+  FolderOpen,
+  Loader2,
+  Plus,
+  Volume2,
+} from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { formatClock } from "../editorModel";
 
 export function Topbar({
   fileInputRef,
-  videoFile,
   status,
   statusText,
   statusTone,
+  projectName,
+  projectSaveState,
+  projectError,
   hasTranscript,
   durations,
+  sourceDuration,
   isBusy,
   canRender,
   modelOptions,
   selectedModel,
-  onFileSelected,
+  audioProcessing,
+  onProjectNameChange,
+  onNewProject,
+  onOpenProjectBrowser,
+  onFilesSelected,
   onChooseVideo,
   onModelChange,
-  onTranscribe,
+  onAudioProcessingChange,
   onOpenCopy,
   onRenderAndDownload,
-  onOpenProject,
 }) {
   return (
     <header className="topbar">
+      <ProjectControl
+        name={projectName}
+        saveState={projectSaveState}
+        error={projectError}
+        disabled={isBusy}
+        onNameChange={onProjectNameChange}
+        onNewProject={onNewProject}
+        onOpenProjectBrowser={onOpenProjectBrowser}
+      />
+
       <div className="topbar-status">
         <span className={`status-dot tone-${statusTone}`} />
         <span className="status-text">{statusText}</span>
@@ -36,6 +63,8 @@ export function Topbar({
             <Stat label="Cut" value={formatClock(durations.cut)} tone="cut" />
             <Stat label="Final" value={formatClock(durations.kept)} tone="keep" />
           </>
+        ) : sourceDuration > 0 ? (
+          <Stat label="Video" value={formatClock(sourceDuration)} />
         ) : null}
       </div>
 
@@ -44,24 +73,29 @@ export function Topbar({
           ref={fileInputRef}
           type="file"
           accept="video/*"
+          multiple
           hidden
-          onChange={(event) => onFileSelected(event.target.files?.[0])}
+          onChange={(event) => {
+            const files = Array.from(event.target.files || []);
+            if (files.length) onFilesSelected(files);
+            event.target.value = "";
+          }}
         />
-        <button className="btn ghost" onClick={onChooseVideo}>
-          <Upload size={15} />
-          <span>{videoFile ? "Change" : "Video"}</span>
+        <button className="btn primary" onClick={onChooseVideo}>
+          <Plus size={15} />
+          <span>Add clip</span>
         </button>
-        <RecentProjects disabled={isBusy} onOpenProject={onOpenProject} />
         <ModelPicker
           options={modelOptions}
           value={selectedModel}
           disabled={isBusy}
           onChange={onModelChange}
         />
-        <button className="btn primary" onClick={onTranscribe} disabled={!videoFile || isBusy}>
-          {status === "transcribing" ? <Loader2 className="spin" size={15} /> : <Play size={15} />}
-          <span>Transcribe</span>
-        </button>
+        <AudioProcessingToggles
+          options={audioProcessing}
+          disabled={isBusy}
+          onChange={onAudioProcessingChange}
+        />
         <button className="btn ghost" onClick={onOpenCopy} disabled={!hasTranscript}>
           <Copy size={15} />
           <span>Copy text</span>
@@ -76,6 +110,107 @@ export function Topbar({
         </button>
       </div>
     </header>
+  );
+}
+
+function ProjectControl({
+  name,
+  saveState,
+  error,
+  disabled,
+  onNameChange,
+  onNewProject,
+  onOpenProjectBrowser,
+}) {
+  const label = (() => {
+    if (saveState === "loading") return "Loading";
+    if (saveState === "saving") return "Saving";
+    if (saveState === "error") return "Save failed";
+    if (saveState === "saved") return "Saved";
+    return "Draft";
+  })();
+
+  return (
+    <div className="project-control">
+      <div className="project-name-wrap">
+        <input
+          className="project-name-input"
+          value={name || ""}
+          aria-label="Project name"
+          placeholder="Untitled project"
+          disabled={disabled || saveState === "loading"}
+          onChange={(event) => onNameChange(event.target.value)}
+        />
+        <span
+          className={`project-save-state is-${saveState || "idle"}`}
+          title={error || label}
+        >
+          {saveState === "saving" || saveState === "loading" ? (
+            <Loader2 className="spin" size={11} />
+          ) : null}
+          <span>{label}</span>
+        </span>
+      </div>
+      <div className="project-buttons">
+        <button
+          type="button"
+          className="btn ghost"
+          onClick={onNewProject}
+          disabled={disabled || saveState === "loading"}
+        >
+          <FilePlus2 size={14} />
+          <span>New</span>
+        </button>
+        <button
+          type="button"
+          className="btn ghost"
+          onClick={onOpenProjectBrowser}
+          disabled={disabled || saveState === "loading"}
+        >
+          <FolderOpen size={14} />
+          <span>Open</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AudioProcessingToggles({ options, disabled, onChange }) {
+  const denoise = Boolean(options?.denoise);
+  const normalize = Boolean(options?.normalize);
+
+  const toggle = (key) => {
+    onChange({
+      ...options,
+      [key]: !Boolean(options?.[key]),
+    });
+  };
+
+  return (
+    <div className="audio-toggles" aria-label="Audio processing">
+      <button
+        type="button"
+        className={`btn toggle${denoise ? " is-on" : ""}`}
+        aria-pressed={denoise}
+        disabled={disabled}
+        title="Remove background noise with DeepFilterNet3. First use prepares the local runtime and model."
+        onClick={() => toggle("denoise")}
+      >
+        <AudioLines size={15} />
+        <span>Denoise</span>
+      </button>
+      <button
+        type="button"
+        className={`btn toggle${normalize ? " is-on" : ""}`}
+        aria-pressed={normalize}
+        disabled={disabled}
+        title="Normalize preview and export audio to -16 LUFS and -1.5 dBTP"
+        onClick={() => toggle("normalize")}
+      >
+        <Volume2 size={15} />
+        <span>Normalize</span>
+      </button>
+    </div>
   );
 }
 
@@ -146,131 +281,6 @@ function ModelPicker({ options, value, disabled, onChange }) {
       ) : null}
     </div>
   );
-}
-
-function RecentProjects({ disabled, onOpenProject }) {
-  const [open, setOpen] = useState(false);
-  const [projects, setProjects] = useState(null);
-  const [loadingId, setLoadingId] = useState(null);
-  const [error, setError] = useState("");
-  const wrapRef = useRef(null);
-
-  const load = useCallback(async () => {
-    setError("");
-    try {
-      const response = await fetch("/api/projects");
-      if (!response.ok) throw new Error(`Failed to load (${response.status})`);
-      const payload = await response.json();
-      setProjects(Array.isArray(payload?.projects) ? payload.projects : []);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-      setProjects([]);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!open) return;
-    load();
-    function onDocDown(e) {
-      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
-    }
-    function onKey(e) {
-      if (e.key === "Escape") setOpen(false);
-    }
-    document.addEventListener("pointerdown", onDocDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("pointerdown", onDocDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open, load]);
-
-  const handlePick = async (project) => {
-    if (!project.hasTranscript || loadingId) return;
-    setLoadingId(project.projectId);
-    try {
-      await onOpenProject(project);
-      setOpen(false);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    } finally {
-      setLoadingId(null);
-    }
-  };
-
-  return (
-    <div className="recent-projects" ref={wrapRef}>
-      <button
-        type="button"
-        className="btn ghost"
-        disabled={disabled}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-      >
-        <Clock size={15} />
-        <span>Recent</span>
-      </button>
-      {open ? (
-        <div className="recent-projects-menu" role="listbox">
-          <div className="recent-projects-head">Recent projects</div>
-          {projects === null ? (
-            <div className="recent-projects-empty">Loading…</div>
-          ) : projects.length === 0 ? (
-            <div className="recent-projects-empty">
-              No saved projects yet. Transcribe a video to create one.
-            </div>
-          ) : (
-            <div className="recent-projects-list">
-              {projects.map((project) => (
-                <button
-                  key={project.projectId}
-                  type="button"
-                  role="option"
-                  className="recent-project"
-                  disabled={!project.hasTranscript || loadingId !== null}
-                  onClick={() => handlePick(project)}
-                  title={project.hasTranscript ? "Open project" : "Transcription incomplete"}
-                >
-                  <div className="recent-project-head">
-                    <span className="recent-project-name">
-                      {project.fileName || project.projectId}
-                    </span>
-                    {loadingId === project.projectId ? (
-                      <Loader2 size={13} className="spin" />
-                    ) : null}
-                  </div>
-                  <div className="recent-project-meta">
-                    <span>{formatRelative(project.createdAt)}</span>
-                    {project.duration ? <span>· {formatClock(project.duration)}</span> : null}
-                    {project.wordCount ? <span>· {project.wordCount} words</span> : null}
-                    {project.hasRender ? <span className="recent-project-tag">rendered</span> : null}
-                    {!project.hasTranscript ? (
-                      <span className="recent-project-tag warn">no transcript</span>
-                    ) : null}
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-          {error ? <div className="recent-projects-error">{error}</div> : null}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function formatRelative(timestamp) {
-  if (!timestamp) return "Unknown";
-  const diff = Date.now() - timestamp;
-  const m = Math.floor(diff / 60000);
-  if (m < 1) return "just now";
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 7) return `${d}d ago`;
-  return new Date(timestamp).toLocaleDateString();
 }
 
 function Stat({ label, value, tone }) {

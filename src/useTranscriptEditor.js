@@ -28,6 +28,52 @@ function replaceSelection(ids, anchorId) {
   };
 }
 
+function sameItems(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i].id !== b[i].id) return false;
+    if (a[i].start !== b[i].start || a[i].end !== b[i].end) return false;
+    if (a[i].clipId !== b[i].clipId || a[i].sourceId !== b[i].sourceId) return false;
+  }
+  return true;
+}
+
+function sameSet(a, b) {
+  if (a.size !== b.size) return false;
+  for (const value of a) {
+    if (!b.has(value)) return false;
+  }
+  return true;
+}
+
+function syncPreparedState(state, items, cut) {
+  const nextItems = Array.isArray(items) ? items : [];
+  const nextCut = new Set(cut || []);
+  const validIds = new Set(nextItems.map((item) => item.id));
+  const selection = new Set([...state.selection].filter((id) => validIds.has(id)));
+  const anchorId = state.anchorId && validIds.has(state.anchorId) ? state.anchorId : null;
+  const activeId =
+    state.activeId && validIds.has(state.activeId) ? state.activeId : nextItems[0]?.id || null;
+
+  if (
+    sameItems(state.items, nextItems) &&
+    sameSet(state.cut, nextCut) &&
+    sameSet(state.selection, selection) &&
+    state.anchorId === anchorId &&
+    state.activeId === activeId
+  ) {
+    return state;
+  }
+
+  return {
+    items: nextItems,
+    cut: nextCut,
+    selection,
+    anchorId,
+    activeId,
+  };
+}
+
 function editorReducer(state, action) {
   switch (action.type) {
     case "reset":
@@ -39,6 +85,17 @@ function editorReducer(state, action) {
         items: action.items,
         activeId: action.items[0]?.id || null,
       };
+
+    case "loadPreparedItems":
+      return {
+        ...emptyState(),
+        items: action.items,
+        cut: new Set(action.cut || []),
+        activeId: action.items[0]?.id || null,
+      };
+
+    case "syncPreparedItems":
+      return syncPreparedState(state, action.items, action.cut);
 
     case "selectSingle":
       return {
@@ -113,11 +170,23 @@ function editorReducer(state, action) {
 export function useTranscriptEditor() {
   const [state, dispatch] = useReducer(editorReducer, initialState);
 
-  const loadWords = useCallback((words) => {
-    const items = buildItems(words);
+  const loadWords = useCallback((words, options) => {
+    const items = buildItems(words, options);
     if (!items.length) return { items, wordCount: 0 };
     dispatch({ type: "loadItems", items });
     return { items, wordCount: countWords(items) };
+  }, []);
+
+  const loadPreparedItems = useCallback((items, cut = new Set()) => {
+    const preparedItems = Array.isArray(items) ? items : [];
+    dispatch({ type: "loadPreparedItems", items: preparedItems, cut });
+    return { items: preparedItems, wordCount: countWords(preparedItems) };
+  }, []);
+
+  const syncPreparedItems = useCallback((items, cut = new Set()) => {
+    const preparedItems = Array.isArray(items) ? items : [];
+    dispatch({ type: "syncPreparedItems", items: preparedItems, cut });
+    return { items: preparedItems, wordCount: countWords(preparedItems) };
   }, []);
 
   const resetEditor = useCallback(() => {
@@ -167,6 +236,8 @@ export function useTranscriptEditor() {
     selectionStats,
     plainText,
     loadWords,
+    loadPreparedItems,
+    syncPreparedItems,
     resetEditor,
     selectSingle,
     extendSelection,

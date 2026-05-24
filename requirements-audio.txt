@@ -1,0 +1,5 @@
+# Optional dependency for the export-time Denoise toggle.
+# DeepFilterNet currently requires numpy<2. On Python versions without a
+# prebuilt deepfilterlib wheel, installing this may require Rust/Cargo.
+numpy==1.26.4
+deepfilternet==0.5.6
