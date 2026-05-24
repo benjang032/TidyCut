@@ -52,6 +52,7 @@ import {
 const RENDER_URL = "/api/render";
 const REFERENCES_URL = "/api/references";
 const AUDIO_PREVIEW_URL = "/api/audio-preview";
+const UNDO_LIMIT = 50;
 
 function readLastProjectId() {
   try {
@@ -76,6 +77,52 @@ function revokeObjectUrls(clips) {
       URL.revokeObjectURL(clip.videoUrl);
     }
   }
+}
+
+function cloneClipForUndo(clip) {
+  return {
+    ...clip,
+    source: clip?.source && typeof clip.source === "object" ? { ...clip.source } : clip?.source,
+    items: Array.isArray(clip?.items) ? clip.items.map((item) => ({ ...item })) : [],
+    cut: new Set(clip?.cut || []),
+  };
+}
+
+function cloneClipsForUndo(clips) {
+  return Array.isArray(clips) ? clips.map(cloneClipForUndo) : [];
+}
+
+function collectObjectUrls(clips) {
+  return new Set((clips || []).map((clip) => clip?.videoUrl).filter(isObjectURL));
+}
+
+function undoSnapshotSignature(snapshot) {
+  return JSON.stringify({
+    activeClipId: snapshot.activeClipId || null,
+    clips: snapshot.clips.map((clip) => ({
+      id: clip.id,
+      cut: [...(clip.cut || [])].sort(),
+      trimStart: clip.trimStart ?? null,
+      trimEnd: clip.trimEnd ?? null,
+      items: clip.items.map((item) => [item.id, item.start, item.end, item.kind, item.text]),
+    })),
+  });
+}
+
+function sameClipEditState(a, b) {
+  return (
+    undoSnapshotSignature({ activeClipId: null, clips: a }) ===
+    undoSnapshotSignature({ activeClipId: null, clips: b })
+  );
+}
+
+function isUndoShortcut(event) {
+  return (
+    (event.metaKey || event.ctrlKey) &&
+    !event.shiftKey &&
+    !event.altKey &&
+    event.key.toLowerCase() === "z"
+  );
 }
 
 function upsertProjectSummary(summaries, summary) {
@@ -139,6 +186,8 @@ export default function App() {
   const pendingMediaSeekRef = useRef(null);
   const scrubbingRef = useRef(false);
   const resumeAfterScrubRef = useRef(false);
+  const undoStackRef = useRef([]);
+  const retainedObjectUrlsRef = useRef(new Set());
 
   useEffect(() => {
     selectedModelRef.current = selectedModel;
@@ -179,8 +228,8 @@ export default function App() {
     extendSelection,
     toggleInSelection,
     clearSelection,
-    cutSelected,
-    restoreSelected,
+    cutSelected: cutSelectedInEditor,
+    restoreSelected: restoreSelectedInEditor,
     setActiveId,
   } = editor;
 
@@ -333,6 +382,21 @@ export default function App() {
     selectedModel,
   ]);
 
+  const pushUndoSnapshot = useCallback(() => {
+    if (!projectBootstrappedRef.current) return;
+    const snapshot = {
+      clips: cloneClipsForUndo(sequenceClips),
+      activeClipId,
+    };
+    const signature = undoSnapshotSignature(snapshot);
+    const last = undoStackRef.current.at(-1);
+    if (last?.signature === signature) return;
+    undoStackRef.current.push({ ...snapshot, signature });
+    if (undoStackRef.current.length > UNDO_LIMIT) {
+      undoStackRef.current.shift();
+    }
+  }, [activeClipId, sequenceClips]);
+
   const resetProjectRuntimeState = useCallback(() => {
     videoRef.current?.pause();
     previewAudioRef.current?.pause();
@@ -341,6 +405,11 @@ export default function App() {
     draggingRef.current = false;
     scrubbingRef.current = false;
     resumeAfterScrubRef.current = false;
+    undoStackRef.current = [];
+    for (const url of retainedObjectUrlsRef.current) {
+      URL.revokeObjectURL(url);
+    }
+    retainedObjectUrlsRef.current.clear();
     setVideoTime(0);
     setSequenceTime(0);
     setIsPlaying(false);
@@ -629,6 +698,35 @@ export default function App() {
     videoRef.current?.pause();
     previewAudioRef.current?.pause();
   }, []);
+
+  const undoLastEdit = useCallback(() => {
+    const snapshot = undoStackRef.current.pop();
+    if (!snapshot) return false;
+
+    pauseCurrentMedia();
+    pendingMediaSeekRef.current = null;
+    draggingRef.current = false;
+    clearSelection();
+    setRenderStatus("idle");
+    setRenderError("");
+
+    setClips((current) => {
+      const next = cloneClipsForUndo(snapshot.clips);
+      const nextUrls = collectObjectUrls(next);
+      for (const url of collectObjectUrls(current)) {
+        if (!nextUrls.has(url)) {
+          URL.revokeObjectURL(url);
+          retainedObjectUrlsRef.current.delete(url);
+        }
+      }
+      for (const url of nextUrls) {
+        retainedObjectUrlsRef.current.delete(url);
+      }
+      return next;
+    });
+    setActiveClipId(snapshot.activeClipId || snapshot.clips[0]?.id || null);
+    return true;
+  }, [clearSelection, pauseCurrentMedia]);
 
   const setActiveTranscriptForSourceTime = useCallback(
     (clipId, sourceTime) => {
@@ -978,6 +1076,10 @@ export default function App() {
     return () => {
       if (saveProjectTimerRef.current) window.clearTimeout(saveProjectTimerRef.current);
       revokeObjectUrls(clipsRef.current);
+      for (const url of retainedObjectUrlsRef.current) {
+        URL.revokeObjectURL(url);
+      }
+      retainedObjectUrlsRef.current.clear();
     };
   }, []);
 
@@ -1275,6 +1377,18 @@ export default function App() {
     activeChipRef.current.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [activeId, isPlaying]);
 
+  const cutSelected = useCallback(() => {
+    if (!selection.size || selectionStats.activeCount <= 0) return;
+    pushUndoSnapshot();
+    cutSelectedInEditor();
+  }, [cutSelectedInEditor, pushUndoSnapshot, selection.size, selectionStats.activeCount]);
+
+  const restoreSelected = useCallback(() => {
+    if (!selection.size || selectionStats.cutCount <= 0) return;
+    pushUndoSnapshot();
+    restoreSelectedInEditor();
+  }, [pushUndoSnapshot, restoreSelectedInEditor, selection.size, selectionStats.cutCount]);
+
   useEffect(() => {
     const onKey = (event) => {
       const target = event.target;
@@ -1284,6 +1398,12 @@ export default function App() {
           target.tagName === "TEXTAREA" ||
           target.isContentEditable)
       ) {
+        return;
+      }
+
+      if (isUndoShortcut(event)) {
+        event.preventDefault();
+        undoLastEdit();
         return;
       }
 
@@ -1325,6 +1445,7 @@ export default function App() {
     clearSelection,
     copyOpen,
     activeClip,
+    undoLastEdit,
     pauseCurrentMedia,
     playFromTimelineIntent,
   ]);
@@ -1543,52 +1664,57 @@ export default function App() {
   ]);
 
   const reorderClip = useCallback((srcId, targetId, side) => {
-    setClips((current) => moveClipBefore(current, srcId, targetId, side));
-  }, []);
+    const next = moveClipBefore(sequenceClips, srcId, targetId, side);
+    if (next === sequenceClips || sameClipEditState(sequenceClips, next)) return;
+    pushUndoSnapshot();
+    setClips(next);
+  }, [pushUndoSnapshot, sequenceClips]);
 
   const removeClip = useCallback(
     (clipId) => {
-      setClips((current) => {
-        const target = current.find((clip) => clip.id === clipId);
-        if (target && isObjectURL(target.videoUrl)) {
-          URL.revokeObjectURL(target.videoUrl);
-        }
-        return current.filter((clip) => clip.id !== clipId);
-      });
-      setActiveClipId((prev) => {
-        if (prev !== clipId) return prev;
-        const remaining = clips.filter((clip) => clip.id !== clipId);
-        const idx = clips.findIndex((clip) => clip.id === clipId);
-        return remaining[Math.min(idx, remaining.length - 1)]?.id || null;
-      });
+      const target = sequenceClips.find((clip) => clip.id === clipId);
+      if (!target) return;
+
+      pushUndoSnapshot();
+      if (isObjectURL(target.videoUrl)) {
+        retainedObjectUrlsRef.current.add(target.videoUrl);
+      }
+
+      const remaining = sequenceClips.filter((clip) => clip.id !== clipId);
+      setClips(remaining);
+      if (activeClipId === clipId) {
+        const idx = sequenceClips.findIndex((clip) => clip.id === clipId);
+        setActiveClipId(remaining[Math.min(idx, remaining.length - 1)]?.id || null);
+      }
     },
-    [clips]
+    [activeClipId, pushUndoSnapshot, sequenceClips]
   );
 
   const setClipTrim = useCallback((clipId, patch) => {
-    setClips((curr) =>
-      applySequenceTranscriptCut(curr, items, cut).map((clip) =>
-        clip.id === clipId
-          ? {
-              ...clip,
-              trimStart: patch.trimStart !== undefined ? patch.trimStart : clip.trimStart,
-              trimEnd: patch.trimEnd !== undefined ? patch.trimEnd : clip.trimEnd,
-            }
-          : clip
-      )
+    const next = sequenceClips.map((clip) =>
+      clip.id === clipId
+        ? {
+            ...clip,
+            trimStart: patch.trimStart !== undefined ? patch.trimStart : clip.trimStart,
+            trimEnd: patch.trimEnd !== undefined ? patch.trimEnd : clip.trimEnd,
+          }
+        : clip
     );
-  }, [cut, items]);
+    if (sameClipEditState(sequenceClips, next)) return;
+    pushUndoSnapshot();
+    setClips(next);
+  }, [pushUndoSnapshot, sequenceClips]);
 
   const splitActiveClipAtPlayhead = useCallback(() => {
     if (!activeClip || activeClip.status !== "ready") return;
     const video = videoRef.current;
     if (!video) return;
     const time = video.currentTime;
-    setClips((curr) => {
-      const flushed = applySequenceTranscriptCut(curr, items, cut);
-      return splitClip(flushed, activeClip.id, time, () => makeClipId("split"));
-    });
-  }, [activeClip, cut, items]);
+    const next = splitClip(sequenceClips, activeClip.id, time, () => makeClipId("split"));
+    if (next === sequenceClips || sameClipEditState(sequenceClips, next)) return;
+    pushUndoSnapshot();
+    setClips(next);
+  }, [activeClip, pushUndoSnapshot, sequenceClips]);
 
   useEffect(() => {
     splitActionRef.current = splitActiveClipAtPlayhead;
