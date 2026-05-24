@@ -1,4 +1,4 @@
-# Local Video Editor
+# TidyCut
 
 Edit video like a notepad.
 

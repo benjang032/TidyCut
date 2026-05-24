@@ -1163,7 +1163,7 @@ app.post("/api/render", async (request, response) => {
     outputPath = path.join(renderDir, "output.mp4");
     downloadName =
       cleanClips.length > 1
-        ? "local-editor-sequence.edit.mp4"
+        ? "tidycut-sequence.edit.mp4"
         : `${path.parse(cleanClips[0].label).name}.edit.mp4`;
 
     await fs.writeFile(planPath, JSON.stringify({ version: 2, clips: cleanClips }, null, 2));
@@ -1547,5 +1547,5 @@ function runTranscription({ videoPath, projectDir, model }) {
 
 const port = Number(process.env.LOCAL_EDITOR_PORT || process.env.LOCAL_EDITOR_BACKEND_PORT || (serveStatic ? 5173 : 8787));
 app.listen(port, () => {
-  console.log(`Local editor listening on http://localhost:${port}`);
+  console.log(`TidyCut listening on http://localhost:${port}`);
 });

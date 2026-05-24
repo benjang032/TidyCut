@@ -1486,7 +1486,7 @@ export default function App() {
       const firstClip = sequenceClips[0];
       const sourceName = firstClip?.fileName || "sequence.mp4";
       const stem =
-        sequenceClips.length > 1 ? "local-editor-sequence" : sourceName.replace(/\.[^.]+$/, "");
+        sequenceClips.length > 1 ? "tidycut-sequence" : sourceName.replace(/\.[^.]+$/, "");
       const a = document.createElement("a");
       a.href = url;
       a.download = `${stem}.edit.mp4`;
