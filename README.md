@@ -1,6 +1,12 @@
-# Local Editor
+# Local Video Editor
 
-Local video transcription and timestamped transcript editing.
+A local-first video transcript editor. Drop in a video, transcribe it on your
+machine, and edit the transcript like a notepad that stays tied to the source
+video.
+
+No hosted transcription API is required. Video files, extracted audio,
+transcripts, edit decisions, and model caches stay on your machine unless you
+move them yourself.
 
 ## Run
 
@@ -15,7 +21,10 @@ Open `http://localhost:5173`.
 
 ## What It Does
 
-Choose a video, click `Transcribe`, and the backend runs local MLX Whisper through `scripts/transcribe_local.py`. The transcript appears as editable timestamped text beside the video. Clicking a timestamp jumps the video to that line.
+Choose a video, click `Transcribe`, and the backend runs local MLX Whisper
+through `scripts/transcribe_local.py`. The transcript appears as editable
+timestamped text beside the video. Clicking a timestamp jumps the video to that
+line.
 
 Before transcription, the backend runs local Silero VAD and sends only detected
 speech ranges into MLX Whisper. The resulting word timestamps stay mapped to the
@@ -33,7 +42,18 @@ projects/<project-id>/
 Whisper models are cached under `models/hf` by default. Silero VAD is installed
 from the pinned Python package in `requirements.txt`.
 
-## Model
+## Features
+
+- Local transcription with MLX Whisper.
+- Word-level timestamps for transcript-driven editing.
+- Silero VAD before transcription, so long silences do not confuse the model.
+- Model picker with size and tradeoff notes.
+- Text-first cut/restore workflow.
+- FFmpeg render path for exporting the edited video.
+- Portable project folders for source video, extracted audio, transcript JSON,
+  and outputs.
+
+## Models
 
 The default model is `mlx-community/whisper-large-v3-turbo`.
 
@@ -51,11 +71,12 @@ VAD is enabled by default. To compare against full-audio transcription:
 LOCAL_EDITOR_VAD=0 npm run dev
 ```
 
-You can also move project/model storage:
+You can also move project/model storage to any local folder, including an
+external SSD:
 
 ```bash
-LOCAL_EDITOR_PROJECTS="/Volumes/Extreme SSD/LocalEditor/projects" \
-LOCAL_EDITOR_MODEL_CACHE="/Volumes/Extreme SSD/LocalEditor/models/hf" \
+LOCAL_EDITOR_PROJECTS="/path/to/projects" \
+LOCAL_EDITOR_MODEL_CACHE="/path/to/models/hf" \
 npm run dev
 ```
 

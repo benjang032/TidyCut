@@ -59,6 +59,30 @@ def phrase_from_segment(segment: dict[str, Any], index: int) -> dict[str, Any]:
     }
 
 
+def mlx_transcribe_with_dtype_fallback(
+    mlx_whisper: Any,
+    audio_path: Path,
+    *,
+    model: str,
+    timestamps: list[float],
+) -> dict[str, Any]:
+    options: dict[str, Any] = {
+        "path_or_hf_repo": model,
+        "word_timestamps": True,
+        "condition_on_previous_text": False,
+        "no_speech_threshold": 0.6,
+        "hallucination_silence_threshold": 1.0,
+        "clip_timestamps": timestamps,
+    }
+
+    try:
+        return mlx_whisper.transcribe(str(audio_path), **options)
+    except TypeError as exc:
+        if "audio_features has an incorrect dtype" not in str(exc):
+            raise
+        return mlx_whisper.transcribe(str(audio_path), **options, fp16=False)
+
+
 def transcribe(
     audio_path: Path,
     model: str,
@@ -80,14 +104,11 @@ def transcribe(
     if not chunks:
         return {"text": "", "segments": [], "language": "unknown"}, vad_metadata.to_json()
 
-    result = mlx_whisper.transcribe(
-        str(audio_path),
-        path_or_hf_repo=model,
-        word_timestamps=True,
-        condition_on_previous_text=False,
-        no_speech_threshold=0.6,
-        hallucination_silence_threshold=1.0,
-        clip_timestamps=clip_timestamps(chunks),
+    result = mlx_transcribe_with_dtype_fallback(
+        mlx_whisper,
+        audio_path,
+        model=model,
+        timestamps=clip_timestamps(chunks),
     )
     return result, vad_metadata.to_json()
 
