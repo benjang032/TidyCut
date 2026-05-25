@@ -5,16 +5,16 @@
 AI-native video editing that still runs locally.
 
 Drop in clips, transcribe them with local Whisper models, edit from the words
-instead of the waveform, ask Claude through OpenRouter for a first-pass scene
-edit, then render a clean MP4 with FFmpeg.
+instead of the waveform, run deterministic silence cleanup, ask GPT-5.4 through
+OpenRouter for take selection, then render a clean MP4 with FFmpeg.
 
 ## What It Does
 
 - Local word-level transcription with MLX Whisper.
 - Transcript-first editing: cut or restore words and pauses directly from text.
-- AI edit planning: Claude through OpenRouter reads timestamped transcript
-  ranges and proposes a conservative scene sequence made from complete usable
-  takes.
+- AI edit planning: code first creates silence-cleaned candidate scenes, then
+  GPT-5.4 through OpenRouter selects a conservative sequence of complete usable
+  takes using a JSON schema response format.
 - Multi-clip sequencing: add clips, make copies from source media, reorder,
   split, trim, and restore timeline sections.
 - Project persistence: autosaved edit projects, project drawer, rename,
@@ -36,11 +36,13 @@ The AI edit flow:
 2. Open settings and add an OpenRouter API key, or provide one with
    `OPENROUTER_API_KEY`.
 3. Click `AI edit`.
-4. TidyCut sends the visible transcript ranges, clip labels, trim bounds, and
-   timing metadata to Claude through OpenRouter.
-5. Claude returns a structured edit plan with selected source ranges, removed
-   ranges, confidence, scene type, and review warnings.
-6. TidyCut applies the plan as timeline clips that can still be inspected,
+4. TidyCut deterministically splits long pauses and trims obvious dead air into
+   candidate scenes while preserving the original pause context.
+5. TidyCut sends candidate scenes plus original transcript context to
+   `openai/gpt-5.4` through OpenRouter.
+6. OpenRouter returns a structured edit plan with selected source ranges,
+   removed ranges, confidence, scene type, and review warnings.
+7. TidyCut applies the plan as timeline clips that can still be inspected,
    adjusted, split, reordered, or rendered manually.
 
 Only the AI edit request goes to OpenRouter. Uploaded media, generated
@@ -75,7 +77,7 @@ Set environment variables in the shell before starting the app:
 
 ```bash
 OPENROUTER_API_KEY="sk-or-v1-..." \
-OPENROUTER_EDIT_MODEL="anthropic/claude-opus-4.6" \
+OPENROUTER_EDIT_MODEL="openai/gpt-5.4" \
 npm run dev
 ```
 
@@ -83,16 +85,15 @@ You can also save the OpenRouter key from the in-app settings modal. Saved AI
 settings are written locally to `projects/_settings/openrouter.json`, which is
 ignored by git.
 
-The default AI edit model is `anthropic/claude-opus-4.6` via OpenRouter. There
-is no direct Anthropic API configuration path.
+The default AI edit model is `openai/gpt-5.4` through OpenRouter.
 
 Useful environment variables:
 
 ```text
-OPENROUTER_API_KEY            Optional key for AI edit.
-OPENROUTER_EDIT_MODEL         Claude model for AI edit. Defaults to anthropic/claude-opus-4.6.
+OPENROUTER_API_KEY            Optional OpenRouter key for AI edit.
+OPENROUTER_EDIT_MODEL         OpenRouter model for AI edit. Defaults to openai/gpt-5.4.
 OPENROUTER_API_URL            OpenRouter-compatible chat completions endpoint.
-OPENROUTER_EDIT_MAX_TOKENS    Maximum output tokens for AI edit. Defaults to 6000.
+OPENROUTER_EDIT_MAX_TOKENS    Maximum output tokens for AI edit. Defaults to 12000.
 LOCAL_EDITOR_MODEL            Default MLX Whisper model.
 LOCAL_EDITOR_MODEL_CACHE      Hugging Face / MLX model cache directory.
 LOCAL_EDITOR_PROJECTS         Project, render, settings, and asset storage root.

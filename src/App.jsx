@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AiEditStatusModal } from "./components/AiEditStatusModal";
 import { CopyPanel } from "./components/CopyPanel";
 import { ExportModal } from "./components/ExportModal";
 import { ProjectSidebar } from "./components/ProjectSidebar";
@@ -283,10 +284,29 @@ export default function App() {
   const [aiEditStatus, setAiEditStatus] = useState("idle");
   const [aiEditError, setAiEditError] = useState("");
   const [aiEditNotice, setAiEditNotice] = useState("");
-  const [aiEditModel, setAiEditModel] = useState("anthropic/claude-opus-4.6");
+  const [aiEditRun, setAiEditRun] = useState({
+    open: false,
+    phase: "idle",
+    failedPhase: "",
+    startedAt: null,
+    completedAt: null,
+    model: "openai/gpt-5.4",
+    routedModel: "",
+    itemCount: 0,
+    clipCount: 0,
+    candidateCount: null,
+    removedSilenceCount: null,
+    removedSilenceSeconds: null,
+    sceneCount: null,
+    usage: null,
+    finishReason: "",
+    generationId: "",
+    error: "",
+  });
+  const [aiEditModel, setAiEditModel] = useState("openai/gpt-5.4");
   const [openRouterSettings, setOpenRouterSettings] = useState({
     configured: false,
-    model: "anthropic/claude-opus-4.6",
+    model: "openai/gpt-5.4",
     keySource: "none",
   });
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
@@ -1850,6 +1870,11 @@ export default function App() {
     setExportModalOpen(false);
   }, [isRendering]);
 
+  const closeAiEditModal = useCallback(() => {
+    if (aiEditStatus === "planning") return;
+    setAiEditRun((current) => ({ ...current, open: false }));
+  }, [aiEditStatus]);
+
   const runAiEdit = useCallback(async (options = {}) => {
     if (isAiEditing || isAnyTranscribing || !hasReadyClips) return;
 
@@ -1865,24 +1890,67 @@ export default function App() {
     if (!requestClips.length) {
       setAiEditStatus("error");
       setAiEditError("AI edit needs a ready clip with word-level transcript timestamps.");
+      setAiEditRun({
+        open: true,
+        phase: "error",
+        failedPhase: "preparing",
+        startedAt: Date.now(),
+        completedAt: Date.now(),
+        model: aiEditModel,
+        routedModel: "",
+        itemCount: 0,
+        clipCount: 0,
+        candidateCount: null,
+        removedSilenceCount: null,
+        removedSilenceSeconds: null,
+        sceneCount: null,
+        usage: null,
+        finishReason: "",
+        generationId: "",
+        error: "AI edit needs a ready clip with word-level transcript timestamps.",
+      });
       return;
     }
 
     pauseCurrentMedia();
+    const startedAt = Date.now();
     setAiEditStatus("planning");
     setAiEditError("");
     setAiEditNotice("");
+    setAiEditRun({
+      open: true,
+      phase: "preparing",
+      failedPhase: "",
+      startedAt,
+      completedAt: null,
+      model: aiEditModel,
+      routedModel: "",
+      itemCount: requestClips.reduce(
+        (total, clip) => total + (Array.isArray(clip.transcript_items) ? clip.transcript_items.length : 0),
+        0
+      ),
+      clipCount: requestClips.length,
+      candidateCount: null,
+      removedSilenceCount: null,
+      removedSilenceSeconds: null,
+      sceneCount: null,
+      usage: null,
+      finishReason: "",
+      generationId: "",
+      error: "",
+    });
     setRenderStatus("idle");
     setRenderError("");
 
     try {
+      setAiEditRun((current) => ({ ...current, phase: "waiting" }));
       const response = await fetch(AI_EDIT_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          mode: "coherence_story_v1",
+          mode: "talking_head_scene_select_v2",
           instructions:
-            "Make a conservative first-pass edit for coherence and storytelling. Treat each selected range as a complete video scene.",
+            "Make a conservative second-pass coherence edit from silence-cleaned candidates. Treat each selected range as a complete visible video scene.",
           clips: requestClips,
         }),
       });
@@ -1894,16 +1962,30 @@ export default function App() {
           setSettingsState("idle");
           setSettingsModalOpen(true);
           setAiEditStatus("idle");
+          setAiEditRun((current) => ({ ...current, open: false, phase: "idle" }));
           return;
         }
         throw new Error(payload.error || "AI edit failed.");
       }
 
+      setAiEditRun((current) => ({
+        ...current,
+        phase: "parsing",
+        model: payload.model || current.model,
+        routedModel: payload.routedModel || "",
+        usage: payload.usage || null,
+        finishReason: payload.finishReason || "",
+        generationId: payload.generationId || "",
+        candidateCount: payload.silenceCleanup?.candidateCount ?? null,
+        removedSilenceCount: payload.silenceCleanup?.removedSilenceCount ?? null,
+        removedSilenceSeconds: payload.silenceCleanup?.removedSilenceSeconds ?? null,
+      }));
       const result = applyAiEditPlanToClips(sequenceClips, payload.plan, () => makeClipId("ai"));
       if (!result.clips.length) {
         throw new Error("AI returned no usable scene ranges.");
       }
 
+      setAiEditRun((current) => ({ ...current, phase: "applying" }));
       pushUndoSnapshot();
       clearSelection();
       pendingMediaSeekRef.current = {
@@ -1916,14 +1998,31 @@ export default function App() {
       setVideoTime(result.clips[0].trimStart || 0);
       setSequenceTime(0);
       setAiEditStatus("idle");
+      setAiEditRun((current) => ({
+        ...current,
+        phase: "complete",
+        completedAt: Date.now(),
+        sceneCount: result.clips.length,
+        error: "",
+      }));
       setAiEditNotice(
         `AI edit applied: ${result.clips.length} scene${result.clips.length === 1 ? "" : "s"}.`
       );
     } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
       setAiEditStatus("error");
-      setAiEditError(caught instanceof Error ? caught.message : String(caught));
+      setAiEditError(message);
+      setAiEditRun((current) => ({
+        ...current,
+        open: true,
+        phase: "error",
+        failedPhase: current.phase || "waiting",
+        completedAt: Date.now(),
+        error: message,
+      }));
     }
   }, [
+    aiEditModel,
     clearSelection,
     openRouterSettings.configured,
     hasReadyClips,
@@ -2339,6 +2438,8 @@ export default function App() {
         onExport={renderAndDownload}
         onClose={closeExportModal}
       />
+
+      <AiEditStatusModal run={aiEditRun} onClose={closeAiEditModal} />
 
       <ProjectSidebar
         open={sidebarOpen}

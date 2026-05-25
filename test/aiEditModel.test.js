@@ -57,10 +57,20 @@ describe("AI edit model", () => {
             source_start: 0,
             source_end: 9,
             text: "First take Second take",
-            scene_type: "complete_take",
+            scene_type: "main_point",
             can_stand_alone: true,
             reason: "Best take",
             confidence: 0.9,
+          },
+        ],
+        dropped_ranges: [
+          {
+            source_clip_id: "clip-a",
+            source_start: 6,
+            source_end: 7,
+            reason: "Weaker duplicate take.",
+            duplicate_of_timeline_index: 0,
+            confidence: 0.8,
           },
         ],
       },
@@ -70,6 +80,8 @@ describe("AI edit model", () => {
     assert.equal(plan.timeline.length, 1);
     assert.equal(plan.timeline[0].sourceStart, 1);
     assert.equal(plan.timeline[0].sourceEnd, 8);
+    assert.equal(plan.droppedRanges.length, 1);
+    assert.equal(plan.droppedRanges[0].duplicateOfTimelineIndex, 0);
   });
 
   it("applies a scene timeline as cloned whole-scene clips", () => {

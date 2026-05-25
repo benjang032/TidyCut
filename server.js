@@ -23,11 +23,10 @@ const openRouterApiUrl =
   process.env.OPENROUTER_API_URL || "https://openrouter.ai/api/v1/chat/completions";
 let openRouterApiKey = process.env.OPENROUTER_API_KEY || "";
 let openRouterApiKeySource = openRouterApiKey ? "environment" : "none";
-const openRouterEditModel =
-  process.env.OPENROUTER_EDIT_MODEL || "anthropic/claude-opus-4.6";
+const openRouterEditModel = process.env.OPENROUTER_EDIT_MODEL || "openai/gpt-5.4";
 const openRouterEditMaxTokens = Math.max(
   1024,
-  Number(process.env.OPENROUTER_EDIT_MAX_TOKENS) || 6000
+  Number(process.env.OPENROUTER_EDIT_MAX_TOKENS) || 12000
 );
 const aiEditMaxTranscriptItems = Math.max(
   1000,
@@ -811,10 +810,26 @@ app.put("/api/settings/openrouter", async (request, response) => {
   }
 });
 
+const aiEditMode = "talking_head_scene_select_v2";
+const silenceSplitThresholdSeconds = 2.0;
+const minPauseToTightenSeconds = 1.0;
+const keepPauseAfterCutSeconds = 0.25;
+const keepPauseBeforeCutSeconds = 0.15;
+const aiEditSceneTypes = [
+  "hook",
+  "intro",
+  "setup",
+  "main_point",
+  "example",
+  "transition",
+  "conclusion",
+  "other",
+];
+
 const aiEditPlanSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["version", "editing_mode", "summary", "timeline", "warnings"],
+  required: ["version", "editing_mode", "summary", "timeline", "dropped_ranges", "warnings"],
   properties: {
     version: {
       type: "string",
@@ -852,17 +867,46 @@ const aiEditPlanSchema = {
           source_end: { type: "number" },
           text: {
             type: "string",
-            description: "Approximate spoken text in the selected continuous scene.",
+            description:
+              "Contiguous transcript content covered by the selected range, not rewritten prose.",
           },
           scene_type: {
             type: "string",
-            enum: ["complete_take", "intro", "main_point", "transition", "outro", "context"],
+            enum: aiEditSceneTypes,
           },
           can_stand_alone: {
             type: "boolean",
             description: "True only when the selected range works as a continuous video take.",
           },
           reason: { type: "string" },
+          confidence: { type: "number" },
+        },
+      },
+    },
+    dropped_ranges: {
+      type: "array",
+      description:
+        "Material rejected ranges such as failed attempts, duplicate takes, abandoned thoughts, or redundant sections.",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "source_clip_id",
+          "source_start",
+          "source_end",
+          "reason",
+          "duplicate_of_timeline_index",
+          "confidence",
+        ],
+        properties: {
+          source_clip_id: { type: "string" },
+          source_start: { type: "number" },
+          source_end: { type: "number" },
+          reason: { type: "string" },
+          duplicate_of_timeline_index: {
+            type: ["number", "null"],
+            description: "Zero-based timeline index this range duplicates, or null.",
+          },
           confidence: { type: "number" },
         },
       },
@@ -888,15 +932,61 @@ const aiEditPlanSchema = {
 
 const aiEditSystemPrompt = [
   "You are a senior talking-head video editor.",
-  "You receive transcript items with timestamps from raw footage of someone trying to record a coherent video.",
-  "The speaker may pause, restart, repeat the same idea, correct themselves, or do multiple takes.",
-  "Infer coherent takes/scenes directly from the transcript and timing data.",
-  "Treat every selected range as a continuous video scene, not as editable prose — do not splice individual words or partial clauses across different takes.",
-  "A selected scene is valid only if the spoken content and visual performance can plausibly work as one continuous clip.",
-  "Prefer complete takes and clean sentence or paragraph boundaries over transcript-perfect micro-edits.",
-  "Keep the original order unless there is a strong coherence or storytelling reason to reorder whole scenes.",
-  "If a choice is uncertain, keep the more coherent complete scene and add a warning. Use warnings for repeated takes, factual differences, or rough boundaries.",
-  "There is no B-roll, so avoid cuts that require visual coverage.",
+  "",
+  "You are receiving transcript-based candidate scenes that have already had obvious long silences removed by a deterministic first-pass cleanup.",
+  "",
+  "Your job is not to remove silence. Your job is to choose the most coherent sequence of usable talking-head scenes.",
+  "",
+  "Focus on:",
+  "- Dropping failed attempts.",
+  "- Dropping weaker duplicate takes.",
+  "- Preserving the smoothest complete version of each idea.",
+  "- Keeping whole usable scenes.",
+  "- Avoiding word-level or clause-level splicing.",
+  "- Maintaining coherent story flow.",
+  "",
+  "The footage has no B-roll or cutaway coverage, so every cut will be visible. Prefer complete continuous scenes over transcript-perfect micro-edits.",
+  "",
+  "Do not rewrite the speaker. Do not create synthetic sentences. Do not combine fragments from different takes unless each selected range is independently usable as a continuous video scene.",
+  "",
+  "If multiple takes cover the same idea, select only the strongest complete take and explain what was dropped.",
+  "",
+  "Hard constraints:",
+  "1. Every selected timeline item must be one continuous range from one source clip.",
+  "2. Do not splice words or partial clauses across different ranges.",
+  "3. Do not rewrite, summarize, or improve the speaker's wording inside timeline.text.",
+  "4. A selected range is valid only if it could plausibly play as one continuous video scene.",
+  "5. Use only timestamps that exist within the visible source clip range.",
+  "6. Do not include long leading or trailing silence.",
+  "7. Return only valid JSON matching the provided schema.",
+  "",
+  "Boundary policy:",
+  "- Start a selected range at the first meaningful word of a clean sentence or paragraph.",
+  "- End a selected range at the last word of a complete sentence or paragraph.",
+  "- Avoid starting immediately after an obvious cut-off, correction, or false start.",
+  "- Avoid ending on an incomplete thought unless it is intentionally a hook or transition.",
+  "- Do not create a selected range shorter than 3 seconds unless it is a clearly usable hook, transition, or conclusion.",
+  "- If a boundary is likely to feel rough visually or aurally, keep the more complete scene and add a warning.",
+  "",
+  "Duplicate-take policy:",
+  "- If multiple takes express the same idea, select only the strongest complete take.",
+  "- Do not combine the best sentence from one take with the best sentence from another unless each selected range is independently a complete scene.",
+  "- If competing takes contain factual differences or materially different claims, choose the clearer/coherent one and add a warning.",
+  "- In the reason field, briefly note when an earlier or later weaker take was dropped.",
+  "",
+  "Output requirements:",
+  "- summary: concise description of the edit strategy and what was removed.",
+  "- timeline: selected scenes in final playback order.",
+  "- source_clip_id/source_start/source_end: exact source identifiers and timestamps.",
+  "- text: the contiguous transcript content covered by the selected range, not rewritten prose.",
+  "- scene_type: classify the scene's role as hook, intro, setup, main_point, example, transition, conclusion, or other.",
+  "- can_stand_alone: true only when the selected range works as one continuous video take.",
+  "- confidence: 0.0-1.0 confidence that the selected range is usable as a continuous scene.",
+  "- reason: explain why this range was selected, including whether it replaced weaker duplicate takes, removed dead air, or preserved a complete take.",
+  "- dropped_ranges: include only materially important failed attempts, duplicate takes, abandoned thoughts, or omissions a human editor may ask about.",
+  "- warnings: include review-worthy issues such as rough boundaries, long internal pauses, repeated takes, factual differences, uncertainty, or jump-cut risk.",
+  "",
+  "Return JSON only. Do not include markdown, commentary, or analysis outside the JSON.",
 ].join("\n");
 
 function roundSeconds(value) {
@@ -979,10 +1069,11 @@ function cleanAiEditRequest(body) {
   }
 
   return {
-    mode: cleanText(body?.mode, "coherence_story_v1", 80),
+    mode: cleanText(body?.mode, aiEditMode, 80),
     instructions: cleanText(body?.instructions, "", 2000) || "",
     clips,
     itemCount,
+    silenceCleanup: buildSilenceCleanup(clips),
   };
 }
 
@@ -996,19 +1087,252 @@ function formatClipForPrompt(clip) {
   return `${header}\n${transcript}`;
 }
 
-function buildAiEditUserPrompt(request) {
-  const sections = [
-    "Task: Create a first-pass coherence/storytelling edit plan. Drop failed attempts, repeated weaker takes, long dead air, and redundant material. Preserve whole usable video scenes.",
-    `Mode: ${request.mode}`,
-  ];
-  if (request.instructions) sections.push(`User instructions: ${request.instructions}`);
-  sections.push(
-    "",
-    "Transcript format: one item per line as `start end text` (seconds within each source clip). Pauses appear as `[pause Xs]`. Set source_clip_id, source_start, and source_end in your output using the clip_id headers and these timestamps.",
-    "",
-    request.clips.map(formatClipForPrompt).join("\n\n")
+function formatCandidateText(words) {
+  return words
+    .map((item) => item.text)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function removedSilenceRange(clip, gap, reason) {
+  const sourceStart = roundSeconds(
+    Math.min(gap.end, Math.max(gap.start, gap.start + keepPauseBeforeCutSeconds))
   );
+  const sourceEnd = roundSeconds(
+    Math.max(gap.start, Math.min(gap.end, gap.end - keepPauseAfterCutSeconds))
+  );
+  return {
+    source_clip_id: clip.clip_id,
+    source_start: sourceStart,
+    source_end: Math.max(sourceStart, sourceEnd),
+    duration: roundSeconds(Math.max(0, sourceEnd - sourceStart)),
+    original_duration: roundSeconds(gap.duration),
+    reason,
+  };
+}
+
+function buildSilenceCleanup(clips) {
+  const candidates = [];
+  const removedSilences = [];
+  const warnings = [];
+  let candidateNumber = 1;
+
+  const finishCandidate = (clip, candidate, trailingPause = 0) => {
+    if (!candidate?.words?.length) return;
+    const firstWord = candidate.words[0];
+    const lastWord = candidate.words[candidate.words.length - 1];
+    const duration = roundSeconds(lastWord.end - firstWord.start);
+    if (duration <= 0) return;
+
+    const internalGaps = candidate.internalGaps || [];
+    const maxInternalPause = internalGaps.reduce(
+      (max, gap) => Math.max(max, Number(gap.duration) || 0),
+      0
+    );
+    const pauseCountOver1s = internalGaps.filter((gap) => gap.duration > 1).length;
+
+    candidates.push({
+      candidate_id: `c_${String(candidateNumber).padStart(3, "0")}`,
+      source_clip_id: clip.clip_id,
+      source_start: roundSeconds(firstWord.start),
+      source_end: roundSeconds(lastWord.end),
+      duration,
+      text: formatCandidateText(candidate.words),
+      removed_leading_pause: roundSeconds(candidate.leadingPause || 0),
+      removed_trailing_pause: roundSeconds(trailingPause || 0),
+      max_internal_pause: roundSeconds(maxInternalPause),
+      pause_count_over_1s: pauseCountOver1s,
+      word_count: candidate.words.length,
+    });
+    candidateNumber += 1;
+
+    if (maxInternalPause > silenceSplitThresholdSeconds) {
+      warnings.push({
+        source_clip_id: clip.clip_id,
+        source_start: roundSeconds(firstWord.start),
+        source_end: roundSeconds(lastWord.end),
+        message: `Candidate contains an internal ${maxInternalPause.toFixed(1)}s pause.`,
+      });
+    }
+  };
+
+  for (const clip of clips) {
+    const items = [...clip.transcript_items].sort(
+      (a, b) => a.start - b.start || a.end - b.end
+    );
+    const hasWordAfter = new Array(items.length).fill(false);
+    let seenWordAfter = false;
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      hasWordAfter[index] = seenWordAfter;
+      if (items[index].kind === "word") seenWordAfter = true;
+    }
+    let candidate = null;
+    let pendingLeadingPause = 0;
+
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      if (item.kind === "word") {
+        if (!candidate) {
+          candidate = {
+            words: [],
+            internalGaps: [],
+            leadingPause: pendingLeadingPause,
+          };
+          pendingLeadingPause = 0;
+        }
+        candidate.words.push(item);
+        continue;
+      }
+
+      const nextHasWord = hasWordAfter[index];
+      const isLongGap = item.duration > silenceSplitThresholdSeconds;
+
+      if (!candidate?.words?.length) {
+        pendingLeadingPause += item.duration;
+        if (item.duration >= minPauseToTightenSeconds && nextHasWord) {
+          removedSilences.push(removedSilenceRange(clip, item, "Leading dead air before speech"));
+        }
+        continue;
+      }
+
+      if (!nextHasWord) {
+        if (item.duration >= minPauseToTightenSeconds) {
+          removedSilences.push(removedSilenceRange(clip, item, "Trailing dead air after speech"));
+        }
+        finishCandidate(clip, candidate, item.duration);
+        candidate = null;
+        pendingLeadingPause = 0;
+        continue;
+      }
+
+      if (isLongGap) {
+        removedSilences.push(
+          removedSilenceRange(clip, item, "Long silence split into separate candidate scenes")
+        );
+        finishCandidate(clip, candidate, item.duration);
+        candidate = null;
+        pendingLeadingPause = item.duration;
+        continue;
+      }
+
+      candidate.internalGaps.push(item);
+    }
+
+    finishCandidate(clip, candidate, 0);
+  }
+
+  const removedSilenceSeconds = roundSeconds(
+    removedSilences.reduce((total, item) => total + (Number(item.duration) || 0), 0)
+  );
+
+  return {
+    mode: "talking_head_silence_trim_v1",
+    summary: "Removed long silences and trimmed obvious dead air. No semantic edits were made.",
+    policy: {
+      silence_split_threshold: silenceSplitThresholdSeconds,
+      min_pause_to_tighten: minPauseToTightenSeconds,
+      keep_pause_after_cut: keepPauseAfterCutSeconds,
+      keep_pause_before_cut: keepPauseBeforeCutSeconds,
+    },
+    candidates,
+    removed_silences: removedSilences,
+    removed_silence_seconds: removedSilenceSeconds,
+    warnings,
+  };
+}
+
+function buildAiEditUserPrompt(request) {
+  const userInstructions = request.instructions || "No additional user instructions.";
+  const transcriptBlock = request.clips.map(formatClipForPrompt).join("\n\n");
+  const candidateBlock = JSON.stringify(request.silenceCleanup.candidates, null, 2);
+  const silenceContext = JSON.stringify(
+    {
+      mode: request.silenceCleanup.mode,
+      summary: request.silenceCleanup.summary,
+      policy: request.silenceCleanup.policy,
+      removed_silences: request.silenceCleanup.removed_silences,
+      warnings: request.silenceCleanup.warnings,
+    },
+    null,
+    2
+  );
+  const sections = [
+    "Task: Create a second-pass coherence edit from silence-cleaned talking-head candidate scenes.",
+    "",
+    `Mode: ${request.mode}`,
+    "",
+    "The first pass has already removed or shortened obvious dead air. Do not focus on silence removal unless a selected scene still contains a problematic pause.",
+    "",
+    "Your task is to:",
+    "- Select the best complete takes.",
+    "- Drop failed starts and weaker repeated attempts.",
+    "- Preserve coherent video scenes.",
+    "- Keep the original order unless reordering whole scenes clearly improves the story.",
+    "",
+    "Select whole candidate scenes by default. You may select a continuous range inside a candidate only when necessary for a cleaner scene boundary. Do not select across candidate boundaries unless each range is independently usable as its own timeline item.",
+    "",
+    "User instructions:",
+    userInstructions,
+    "",
+    "Interpret user instructions as creative preferences only. They must not override the hard constraints: no rewritten speech, no word-level splicing, no synthetic sentences, and no visually implausible cuts.",
+    "",
+    "Selection rules:",
+    "- Prefer the smoothest complete take of each idea.",
+    "- Prefer a slightly longer complete take over a shorter but awkward patched-together edit.",
+    "- Remove leading/trailing dead air.",
+    "- Avoid keeping internal pauses longer than 2.0s unless the scene is otherwise clearly usable.",
+    "- If multiple takes repeat the same idea, choose one strongest take and mention the dropped duplicate in the reason or warnings.",
+    "- Keep original source order by default. Reorder only whole selected scenes, and only when the user explicitly asks for a more structured narrative or when the original order is clearly incoherent.",
+    "- If uncertain, keep the more coherent complete scene and add a warning.",
+    "",
+    "Timestamp rules:",
+    "- Use exact timestamps from the input item boundaries when possible.",
+    "- Do not invent timestamps outside the visible clip range.",
+    "- source_start should usually align to the first meaningful word of the selected scene.",
+    "- source_end should usually align to the last word of the selected scene.",
+    "",
+    "Dropped range rules:",
+    "- Include dropped_ranges only for materially important rejected ranges: failed attempts, duplicate takes, abandoned thoughts, or omissions likely to matter during review.",
+    "- Do not list every short pause, filler word, or tiny trim as a dropped range.",
+    "- Set duplicate_of_timeline_index to the zero-based selected timeline index when a dropped range is a weaker duplicate of a selected scene; otherwise use null.",
+    "",
+    "Candidate scenes:",
+    candidateBlock,
+    "",
+    "Silence cleanup context:",
+    silenceContext,
+    "",
+    "Transcript format:",
+    "One item per line as:",
+    "start end text",
+    "",
+    "Times are seconds within each source clip.",
+    "Pauses appear as [pause Xs].",
+    "Use the clip_id header to set source_clip_id.",
+    "Use the item timestamps to set source_start and source_end.",
+    "",
+    "Original pause/restart context:",
+    transcriptBlock,
+    "",
+    "Return strict JSON matching the schema.",
+    "Do not include markdown.",
+    "Do not include explanations outside JSON.",
+  ];
   return sections.join("\n");
+}
+
+function parseAiEditPlanJson(text, providerLabel) {
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw httpError(
+      502,
+      `${providerLabel} returned invalid structured output (${message}). Try again, or raise the AI edit output token limit if this transcript is long.`,
+      "AI_EDIT_INVALID_JSON"
+    );
+  }
 }
 
 function extractOpenRouterJson(payload) {
@@ -1016,6 +1340,14 @@ function extractOpenRouterJson(payload) {
   if (output && typeof output === "object" && !Array.isArray(output)) return output;
 
   const choice = Array.isArray(payload?.choices) ? payload.choices[0] : null;
+  const finishReason = choice?.finish_reason || choice?.native_finish_reason || "";
+  if (finishReason === "length" || finishReason === "max_tokens") {
+    throw httpError(
+      502,
+      "OpenRouter truncated the AI edit plan before it finished. Raise OPENROUTER_EDIT_MAX_TOKENS or edit fewer transcript items.",
+      "OPENROUTER_INCOMPLETE_OUTPUT"
+    );
+  }
   const content = choice?.message?.content;
   if (content && typeof content === "object" && !Array.isArray(content)) return content;
 
@@ -1028,7 +1360,16 @@ function extractOpenRouterJson(payload) {
     .join("")
     .trim();
   if (!text) throw new Error("OpenRouter returned no structured edit plan.");
-  return JSON.parse(text);
+  return parseAiEditPlanJson(text, "OpenRouter");
+}
+
+function openRouterResponseMeta(payload, response) {
+  const choice = Array.isArray(payload?.choices) ? payload.choices[0] : null;
+  return {
+    finishReason: choice?.finish_reason || choice?.native_finish_reason || null,
+    generationId: response.headers.get("x-generation-id") || payload?.id || null,
+    routedModel: typeof payload?.model === "string" ? payload.model : null,
+  };
 }
 
 async function callOpenRouterAiEdit(request) {
@@ -1089,9 +1430,11 @@ async function callOpenRouterAiEdit(request) {
   }
 
   const plan = extractOpenRouterJson(payload);
+  const meta = openRouterResponseMeta(payload, response);
   return {
     plan,
     usage: payload?.usage || null,
+    ...meta,
   };
 }
 
@@ -1105,6 +1448,48 @@ function aiClipRangeMap(clips) {
       },
     ])
   );
+}
+
+function aiClipMap(clips) {
+  return new Map(clips.map((clip) => [clip.clip_id, clip]));
+}
+
+function validateAiEditRange(raw, clipsById, label) {
+  const clipId = cleanText(raw?.source_clip_id, null, 160);
+  if (!clipId) throw httpError(502, `AI returned ${label} without source_clip_id.`);
+
+  const clip = clipsById.get(clipId);
+  if (!clip) throw httpError(502, `AI returned ${label} for unknown clip_id: ${clipId}.`);
+
+  const start = Number(raw?.source_start);
+  const end = Number(raw?.source_end);
+  if (!Number.isFinite(start)) throw httpError(502, `AI returned ${label} without source_start.`);
+  if (!Number.isFinite(end)) throw httpError(502, `AI returned ${label} without source_end.`);
+  if (end <= start) throw httpError(502, `AI returned ${label} with an invalid range.`);
+
+  const min = Number(clip.visible_start);
+  const max = Number(clip.visible_end);
+  const epsilon = 0.001;
+  if (start < min - epsilon || end > max + epsilon) {
+    throw httpError(502, `AI returned ${label} outside visible bounds for ${clipId}.`);
+  }
+
+  return { clipId, start, end };
+}
+
+function validateAiEditPlan(plan, clips) {
+  const clipsById = aiClipMap(clips);
+  const timeline = Array.isArray(plan?.timeline) ? plan.timeline : [];
+  if (!timeline.length) throw httpError(502, "AI returned an empty edit timeline.");
+
+  for (const [index, item] of timeline.entries()) {
+    validateAiEditRange(item, clipsById, `timeline item ${index + 1}`);
+  }
+
+  const droppedRanges = Array.isArray(plan?.dropped_ranges) ? plan.dropped_ranges : [];
+  for (const [index, item] of droppedRanges.entries()) {
+    validateAiEditRange(item, clipsById, `dropped range ${index + 1}`);
+  }
 }
 
 function sanitizeAiRange(raw, clipRanges) {
@@ -1129,18 +1514,27 @@ function sanitizeAiTimelineEntry(raw, index, clipRanges) {
     edit_id: cleanText(raw?.edit_id, `edit_${String(index + 1).padStart(3, "0")}`, 120),
     ...range,
     text: cleanText(raw?.text, "", 2000) || "",
-    scene_type: [
-      "complete_take",
-      "intro",
-      "main_point",
-      "transition",
-      "outro",
-      "context",
-    ].includes(raw?.scene_type)
+    scene_type: aiEditSceneTypes.includes(raw?.scene_type)
       ? raw.scene_type
-      : "complete_take",
+      : "other",
     can_stand_alone: Boolean(raw?.can_stand_alone),
     reason: cleanText(raw?.reason, "Selected by AI edit.", 1000) || "Selected by AI edit.",
+    confidence: Math.min(1, Math.max(0, finiteNumber(raw?.confidence, 0))),
+  };
+}
+
+function sanitizeAiDroppedRange(raw, clipRanges, timelineLength) {
+  const range = sanitizeAiRange(raw, clipRanges);
+  if (!range) return null;
+  const duplicateIndex = Number(raw?.duplicate_of_timeline_index);
+  return {
+    ...range,
+    reason:
+      cleanText(raw?.reason, "Dropped by AI edit.", 1000) || "Dropped by AI edit.",
+    duplicate_of_timeline_index:
+      Number.isInteger(duplicateIndex) && duplicateIndex >= 0 && duplicateIndex < timelineLength
+        ? duplicateIndex
+        : null,
     confidence: Math.min(1, Math.max(0, finiteNumber(raw?.confidence, 0))),
   };
 }
@@ -1156,21 +1550,48 @@ function sanitizeAiWarning(raw, clipRanges) {
   };
 }
 
-function sanitizeAiEditPlan(rawPlan, request) {
-  const clipRanges = aiClipRangeMap(request.clips);
-  const timeline = (Array.isArray(rawPlan?.timeline) ? rawPlan.timeline : [])
-    .map((entry, index) => sanitizeAiTimelineEntry(entry, index, clipRanges))
-    .filter(Boolean);
-  if (!timeline.length) {
-    throw httpError(502, "AI returned an empty edit timeline.");
-  }
+function transcriptItemsInsideRange(clip, range) {
+  return clip.transcript_items.filter(
+    (item) => Math.max(item.start, range.source_start) < Math.min(item.end, range.source_end)
+  );
+}
 
-  const warnings = (Array.isArray(rawPlan?.warnings) ? rawPlan.warnings : [])
-    .map((entry) => sanitizeAiWarning(entry, clipRanges))
-    .filter(Boolean);
+function snapTimelineEntryToSpokenWords(entry, clipsById) {
+  const clip = clipsById.get(entry.source_clip_id);
+  if (!clip) return entry;
+
+  const words = transcriptItemsInsideRange(clip, entry).filter((item) => item.kind === "word");
+  if (!words.length) return entry;
+
+  const sourceStart = roundSeconds(Math.max(entry.source_start, words[0].start));
+  const sourceEnd = roundSeconds(Math.min(entry.source_end, words[words.length - 1].end));
+  if (sourceEnd <= sourceStart) return entry;
+
+  return {
+    ...entry,
+    source_start: sourceStart,
+    source_end: sourceEnd,
+  };
+}
+
+function addDeterministicAiWarnings(timeline, requestClips, warnings) {
+  const clipsById = aiClipMap(requestClips);
+  const warningKey = new Set(
+    warnings.map(
+      (warning) =>
+        `${warning.source_clip_id}:${warning.source_start}:${warning.source_end}:${warning.message}`
+    )
+  );
+  const pushWarning = (warning) => {
+    const key = `${warning.source_clip_id}:${warning.source_start}:${warning.source_end}:${warning.message}`;
+    if (warningKey.has(key)) return;
+    warningKey.add(key);
+    warnings.push(warning);
+  };
+
   for (const entry of timeline) {
     if (!entry.can_stand_alone) {
-      warnings.push({
+      pushWarning({
         source_clip_id: entry.source_clip_id,
         source_start: entry.source_start,
         source_end: entry.source_end,
@@ -1178,7 +1599,81 @@ function sanitizeAiEditPlan(rawPlan, request) {
         message: "AI selected this scene but marked it as not fully standalone.",
       });
     }
+
+    const duration = entry.source_end - entry.source_start;
+    if (
+      duration < 3 &&
+      !["hook", "transition", "conclusion"].includes(entry.scene_type)
+    ) {
+      pushWarning({
+        source_clip_id: entry.source_clip_id,
+        source_start: entry.source_start,
+        source_end: entry.source_end,
+        severity: "review",
+        message: "Selected scene is shorter than 3 seconds and may feel abrupt.",
+      });
+    }
+
+    const clip = clipsById.get(entry.source_clip_id);
+    if (!clip) continue;
+    for (const item of transcriptItemsInsideRange(clip, entry)) {
+      if (item.kind !== "gap" || item.duration <= 2) continue;
+      if (item.start <= entry.source_start || item.end >= entry.source_end) continue;
+      pushWarning({
+        source_clip_id: entry.source_clip_id,
+        source_start: entry.source_start,
+        source_end: entry.source_end,
+        severity: "review",
+        message: `Selected scene contains an internal ${item.duration.toFixed(1)}s pause.`,
+      });
+    }
   }
+
+  const byClip = new Map();
+  for (const entry of timeline) {
+    const entries = byClip.get(entry.source_clip_id) || [];
+    entries.push(entry);
+    byClip.set(entry.source_clip_id, entries);
+  }
+  for (const entries of byClip.values()) {
+    entries.sort((a, b) => a.source_start - b.source_start || a.source_end - b.source_end);
+    for (let index = 1; index < entries.length; index += 1) {
+      const previous = entries[index - 1];
+      const current = entries[index];
+      if (current.source_start < previous.source_end) {
+        pushWarning({
+          source_clip_id: current.source_clip_id,
+          source_start: current.source_start,
+          source_end: current.source_end,
+          severity: "risk",
+          message: "Selected scene overlaps another selected range from the same source clip.",
+        });
+      }
+    }
+  }
+}
+
+function sanitizeAiEditPlan(rawPlan, request) {
+  validateAiEditPlan(rawPlan, request.clips);
+  const clipRanges = aiClipRangeMap(request.clips);
+  const clipsById = aiClipMap(request.clips);
+  const timeline = (Array.isArray(rawPlan?.timeline) ? rawPlan.timeline : [])
+    .map((entry, index) => sanitizeAiTimelineEntry(entry, index, clipRanges))
+    .map((entry) => (entry ? snapTimelineEntryToSpokenWords(entry, clipsById) : null))
+    .filter((entry) => entry && entry.source_end - entry.source_start >= 0.25)
+    .filter(Boolean);
+  if (!timeline.length) {
+    throw httpError(502, "AI returned an empty edit timeline.");
+  }
+
+  const droppedRanges = (Array.isArray(rawPlan?.dropped_ranges) ? rawPlan.dropped_ranges : [])
+    .map((entry) => sanitizeAiDroppedRange(entry, clipRanges, timeline.length))
+    .filter(Boolean);
+
+  const warnings = (Array.isArray(rawPlan?.warnings) ? rawPlan.warnings : [])
+    .map((entry) => sanitizeAiWarning(entry, clipRanges))
+    .filter(Boolean);
+  addDeterministicAiWarnings(timeline, request.clips, warnings);
 
   return {
     version: "tidycut_ai_edit_v1",
@@ -1186,6 +1681,7 @@ function sanitizeAiEditPlan(rawPlan, request) {
     editing_mode: cleanText(rawPlan?.editing_mode, request.mode, 120) || request.mode,
     summary: cleanText(rawPlan?.summary, "AI generated a first-pass edit.", 2000),
     timeline,
+    dropped_ranges: droppedRanges,
     warnings,
   };
 }
@@ -1194,11 +1690,21 @@ app.post("/api/ai/edit-plan", async (request, response) => {
   let editRequest;
   try {
     editRequest = cleanAiEditRequest(request.body || {});
-    const { plan: rawPlan, usage } = await callOpenRouterAiEdit(editRequest);
+    const { plan: rawPlan, usage, finishReason, generationId, routedModel } =
+      await callOpenRouterAiEdit(editRequest);
     const plan = sanitizeAiEditPlan(rawPlan, editRequest);
     response.json({
       model: openRouterEditModel,
+      routedModel,
+      finishReason,
+      generationId,
       itemCount: editRequest.itemCount,
+      silenceCleanup: {
+        mode: editRequest.silenceCleanup.mode,
+        candidateCount: editRequest.silenceCleanup.candidates.length,
+        removedSilenceCount: editRequest.silenceCleanup.removed_silences.length,
+        removedSilenceSeconds: editRequest.silenceCleanup.removed_silence_seconds,
+      },
       usage,
       plan,
     });

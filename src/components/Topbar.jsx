@@ -76,7 +76,7 @@ export function Topbar({
             className="btn ghost"
             onClick={onAutoEdit}
             disabled={!canAiEdit}
-            title="Ask Claude through OpenRouter to infer complete takes and apply a first-pass edit"
+            title="Ask GPT-5.4 through OpenRouter to infer complete takes and apply a first-pass edit"
           >
             {isAiEditing ? (
               <Loader2 className="spin" size={15} />
