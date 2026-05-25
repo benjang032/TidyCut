@@ -23,7 +23,6 @@ describe("project model", () => {
           status: "ready",
           _pending: { file: {} },
           items: [{ id: "w1", kind: "word", text: "hello", start: 0, end: 1 }],
-          cut: new Set(["w1"]),
         },
       ],
     });
@@ -31,12 +30,12 @@ describe("project model", () => {
     assert.equal(document.clips[0].videoUrl, "/api/projects/media-a/video");
     assert.equal(document.mediaSources[0].id, "clip-a");
     assert.equal(document.mediaSources[0].mediaSourceId, "clip-a");
-    assert.deepEqual(document.clips[0].cut, ["w1"]);
+    assert.equal(Object.hasOwn(document.clips[0], "cut"), false);
     assert.equal(document.clips[0].trimEnd, null);
     assert.equal("_pending" in document.clips[0], false);
   });
 
-  it("hydrates saved clips with Sets and project video URLs", () => {
+  it("hydrates saved clips with project video URLs", () => {
     const hydrated = hydrateProjectDocument({
       id: "edit-a",
       name: "Saved edit",
@@ -49,7 +48,6 @@ describe("project model", () => {
           fileName: "source.mov",
           duration: 12,
           items: [{ id: "w1", kind: "word", text: "hello", start: 0, end: 1 }],
-          cut: ["w1"],
         },
       ],
     });
@@ -59,8 +57,43 @@ describe("project model", () => {
     assert.equal(hydrated.clips[0].mediaSourceId, "clip-a");
     assert.equal(hydrated.mediaSources.length, 1);
     assert.equal(hydrated.clips[0].videoUrl, "/api/projects/media-a/video");
-    assert.equal(hydrated.clips[0].cut instanceof Set, true);
-    assert.equal(hydrated.clips[0].cut.has("w1"), true);
+    assert.equal(Object.hasOwn(hydrated.clips[0], "cut"), false);
+  });
+
+  it("migrates legacy cut words into split source-range clips", () => {
+    const hydrated = hydrateProjectDocument({
+      id: "edit-a",
+      activeClipId: "clip-a",
+      clips: [
+        {
+          id: "clip-a",
+          projectId: "media-a",
+          fileName: "source.mov",
+          duration: 5,
+          trimStart: 0,
+          trimEnd: null,
+          items: [
+            { id: "w1", kind: "word", text: "keep", start: 0, end: 1 },
+            { id: "w2", kind: "word", text: "drop", start: 1, end: 2 },
+            { id: "w3", kind: "word", text: "tail", start: 2, end: 3 },
+          ],
+          cut: ["w2"],
+        },
+      ],
+    });
+
+    assert.deepEqual(
+      hydrated.clips.map((clip) => ({
+        id: clip.id,
+        trimStart: clip.trimStart,
+        trimEnd: clip.trimEnd,
+        hasCut: Object.hasOwn(clip, "cut"),
+      })),
+      [
+        { id: "clip-a", trimStart: 0, trimEnd: 1, hasCut: false },
+        { id: "clip-a_migrated_0_1", trimStart: 2, trimEnd: null, hasCut: false },
+      ]
+    );
   });
 
   it("recovers legacy untrimmed clips saved with a zero trim end", () => {
@@ -76,7 +109,6 @@ describe("project model", () => {
           trimStart: 0,
           trimEnd: 0,
           items: [{ id: "w1", kind: "word", text: "hello", start: 3, end: 4 }],
-          cut: [],
         },
         {
           id: "clip-b",
@@ -86,7 +118,6 @@ describe("project model", () => {
           trimStart: 3,
           trimEnd: 0,
           items: [{ id: "w2", kind: "word", text: "again", start: 5, end: 6 }],
-          cut: [],
         },
       ],
     });
@@ -104,7 +135,6 @@ describe("project model", () => {
           fileName: "upload.mov",
           status: "transcribing",
           items: [],
-          cut: [],
         },
       ],
     });
@@ -127,7 +157,6 @@ describe("project model", () => {
           trimStart: 4,
           trimEnd: 5,
           items: [{ id: "w1", kind: "word", text: "hello", start: 0, end: 1 }],
-          cut: ["w1"],
         },
       ],
       clips: [
@@ -140,7 +169,6 @@ describe("project model", () => {
           trimStart: 4,
           trimEnd: 5,
           items: [{ id: "w1", kind: "word", text: "hello", start: 0, end: 1 }],
-          cut: ["w1"],
         },
       ],
     });
@@ -150,7 +178,7 @@ describe("project model", () => {
     assert.equal(hydrated.mediaSources[0].id, "source-a");
     assert.equal(hydrated.mediaSources[0].trimStart, 0);
     assert.equal(hydrated.mediaSources[0].trimEnd, null);
-    assert.equal(hydrated.mediaSources[0].cut.size, 0);
+    assert.equal(Object.hasOwn(hydrated.mediaSources[0], "cut"), false);
   });
 
   it("keeps project signatures stable across server timestamp updates", () => {

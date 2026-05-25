@@ -26,7 +26,6 @@ export function VideoPane({
   hasTranscript,
   sourceDuration,
   items,
-  cut,
   durations,
   error,
   mediaSources = [],
@@ -125,7 +124,7 @@ export function VideoPane({
 
           <AudioPreviewProgress audioPreview={audioPreview} />
 
-          {hasTranscript ? <TimelineRibbon items={items} cut={cut} durations={durations} /> : null}
+          {hasTranscript ? <TimelineRibbon items={items} durations={durations} /> : null}
 
           {error ? <pre className="error-box">{error}</pre> : null}
         </>
@@ -318,7 +317,7 @@ function AudioPreviewProgress({ audioPreview }) {
   );
 }
 
-function TimelineRibbon({ items, cut, durations }) {
+function TimelineRibbon({ items, durations }) {
   if (!items.length || durations.total <= 0) return null;
   const start = items[0].start;
   const span = items[items.length - 1].end - start;
@@ -331,7 +330,6 @@ function TimelineRibbon({ items, cut, durations }) {
           const left = ((it.start - start) / span) * 100;
           const width = ((it.end - it.start) / span) * 100;
           const cls = ["ribbon-cell", `ribbon-${it.kind}`];
-          if (cut.has(it.id)) cls.push("is-cut");
           return (
             <span
               key={it.id}

@@ -94,7 +94,6 @@ export function buildClipFromTranscript({ projectId, projectDir, videoPath, mode
     duration,
     wordCount: countWords(items),
     items,
-    cut: new Set(),
   };
 }
 
@@ -114,7 +113,6 @@ export function makeUploadClip(file) {
     duration: 0,
     wordCount: 0,
     items: [],
-    cut: new Set(),
     trimStart: 0,
     trimEnd: null,
     status: "probing",
@@ -139,7 +137,6 @@ export function makeReferencedClip(reference) {
     duration: Number(reference.duration) || Number(reference.source?.duration) || 0,
     wordCount: 0,
     items: [],
-    cut: new Set(),
     trimStart: 0,
     trimEnd: null,
     status: "queued",

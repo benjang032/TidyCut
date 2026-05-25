@@ -542,11 +542,7 @@ export function Timeline({
         </div>
         <div className="timeline-stats">
           {hasTranscript && durations ? (
-            <>
-              <Stat label="Original" value={formatClock(durations.total)} />
-              <Stat label="Cut" value={formatClock(durations.cut)} tone="cut" />
-              <Stat label="Final" value={formatClock(durations.kept)} tone="keep" />
-            </>
+            <Stat label="Sequence" value={formatClock(durations.kept)} tone="keep" />
           ) : sourceDuration > 0 ? (
             <Stat label="Video" value={formatClock(sourceDuration)} />
           ) : null}

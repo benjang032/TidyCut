@@ -1,4 +1,4 @@
-import { Copy, Download, Loader2, PanelLeft, WandSparkles } from "lucide-react";
+import { AudioLines, Copy, Download, Loader2, PanelLeft, Volume2, WandSparkles } from "lucide-react";
 
 export function Topbar({
   fileInputRef,
@@ -12,13 +12,19 @@ export function Topbar({
   canAiEdit,
   canRender,
   isBusy,
+  audioProcessing,
+  audioProcessingDisabled = false,
   onProjectNameChange,
   onToggleSidebar,
   onFilesSelected,
+  onToggleAudioProcessing,
   onOpenCopy,
   onAutoEdit,
   onRenderAndDownload,
 }) {
+  const denoiseOn = Boolean(audioProcessing?.denoise);
+  const normalizeOn = Boolean(audioProcessing?.normalize);
+
   return (
     <header className="topbar">
       <ProjectControl
@@ -32,6 +38,30 @@ export function Topbar({
       <div className="topbar-right">
         <SaveIndicator saveState={projectSaveState} error={projectError} />
         <div className="topbar-actions">
+          <div className="topbar-audio-controls" aria-label="Audio processing">
+            <button
+              type="button"
+              className={`btn toggle${denoiseOn ? " is-on" : ""}`}
+              aria-pressed={denoiseOn}
+              disabled={audioProcessingDisabled}
+              title="Applies to new audio previews and exports"
+              onClick={() => onToggleAudioProcessing("denoise")}
+            >
+              <AudioLines size={15} />
+              <span>Denoise</span>
+            </button>
+            <button
+              type="button"
+              className={`btn toggle${normalizeOn ? " is-on" : ""}`}
+              aria-pressed={normalizeOn}
+              disabled={audioProcessingDisabled}
+              title="Applies to new audio previews and exports"
+              onClick={() => onToggleAudioProcessing("normalize")}
+            >
+              <Volume2 size={15} />
+              <span>Normalize</span>
+            </button>
+          </div>
           <button
             type="button"
             className="btn ghost"

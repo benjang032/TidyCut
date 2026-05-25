@@ -26,22 +26,19 @@ import {
   readVideoDurationFromUrl,
   runTranscriptionRequest,
 } from "./clipModel";
-import { countWords, nextKeptTime, SKIP_EPSILON } from "./editorModel";
+import { countWords, SKIP_EPSILON } from "./editorModel";
 import {
-  applySequenceTranscriptCut,
   buildSequencePlaybackEntries,
   buildSequenceRenderClips,
   buildSequenceTranscriptItems,
   deleteSequenceTranscriptSelection,
   extendSelectedClipEdges,
   getClipDurations,
-  getClipTimeline,
   getClipTrimRange,
   getFirstReadyPlaybackEntry,
   getNextReadyPlaybackEntry,
   getSequenceDurations,
   getSequencePlainText,
-  getSequenceTranscriptCut,
   getSelectedClipEdgeExtensionState,
   isSequencePlaybackComplete,
   moveClipBefore,
@@ -155,7 +152,6 @@ function cloneClipForUndo(clip) {
     ...clip,
     source: clip?.source && typeof clip.source === "object" ? { ...clip.source } : clip?.source,
     items: Array.isArray(clip?.items) ? clip.items.map((item) => ({ ...item })) : [],
-    cut: new Set(clip?.cut || []),
   };
 }
 
@@ -172,7 +168,6 @@ function normalizeMediaSourceClip(clip) {
     mediaSourceId,
     trimStart: 0,
     trimEnd: null,
-    cut: new Set(),
     aiEdit: undefined,
   };
 }
@@ -226,7 +221,6 @@ function makeTimelineCopyFromSource(source, id) {
     mediaSourceId,
     trimStart: 0,
     trimEnd: null,
-    cut: new Set(),
     aiEdit: undefined,
   };
 }
@@ -240,7 +234,6 @@ function undoSnapshotSignature(snapshot) {
     activeClipId: snapshot.activeClipId || null,
     clips: snapshot.clips.map((clip) => ({
       id: clip.id,
-      cut: [...(clip.cut || [])].sort(),
       trimStart: clip.trimStart ?? null,
       trimEnd: clip.trimEnd ?? null,
       items: clip.items.map((item) => [item.id, item.start, item.end, item.kind, item.text]),
@@ -378,7 +371,6 @@ export default function App() {
 
   const {
     items,
-    cut,
     selection,
     activeId,
     durations,
@@ -389,7 +381,6 @@ export default function App() {
     extendSelection,
     toggleInSelection,
     clearSelection,
-    restoreSelected: restoreSelectedInEditor,
     setActiveId,
   } = editor;
 
@@ -407,21 +398,10 @@ export default function App() {
   );
 
   const baseTranscriptItems = useMemo(() => buildSequenceTranscriptItems(clips), [clips]);
-  const baseTranscriptCut = useMemo(
-    () => getSequenceTranscriptCut(clips, baseTranscriptItems),
-    [baseTranscriptItems, clips]
-  );
-  const sequenceClips = useMemo(
-    () => applySequenceTranscriptCut(clips, items, cut),
-    [clips, cut, items]
-  );
+  const sequenceClips = clips;
   const activeClip = useMemo(
     () => sequenceClips.find((clip) => clip.id === activeClipId) || null,
     [activeClipId, sequenceClips]
-  );
-  const activeTimeline = useMemo(
-    () => (activeClip?.status === "ready" ? getClipTimeline(activeClip) : []),
-    [activeClip]
   );
   const activeDurations = useMemo(
     () => (activeClip?.status === "ready" ? getClipDurations(activeClip) : durations),
@@ -467,8 +447,8 @@ export default function App() {
     return entry?.clip || null;
   }, [activeClipId, sequenceClips]);
   const clipEdgeExtensionState = useMemo(
-    () => getSelectedClipEdgeExtensionState(sequenceClips, items, cut, selection, 0.1),
-    [cut, items, selection, sequenceClips]
+    () => getSelectedClipEdgeExtensionState(sequenceClips, items, selection, 0.1),
+    [items, selection, sequenceClips]
   );
 
   const isRendering = renderStatus === "rendering";
@@ -926,7 +906,6 @@ export default function App() {
       let found = null;
       for (const item of items) {
         if (item.clipId !== clipId) continue;
-        if (cut.has(item.id)) continue;
         if (sourceTime >= item.start - SKIP_EPSILON && sourceTime < item.end - SKIP_EPSILON) {
           found = item;
           break;
@@ -935,7 +914,7 @@ export default function App() {
       }
       setActiveId(found ? found.id : null);
     },
-    [cut, items, setActiveId]
+    [items, setActiveId]
   );
 
   const restartSequencePlayback = useCallback(() => {
@@ -1382,14 +1361,8 @@ export default function App() {
       resetEditor();
       return;
     }
-    syncPreparedItems(baseTranscriptItems, baseTranscriptCut);
-  }, [baseTranscriptCut, baseTranscriptItems, resetEditor, syncPreparedItems]);
-
-  // Push sequence transcript cut edits back into their owning clips.
-  useEffect(() => {
-    if (!items.length) return;
-    setClips((current) => applySequenceTranscriptCut(current, items, cut));
-  }, [cut, items]);
+    syncPreparedItems(baseTranscriptItems);
+  }, [baseTranscriptItems, resetEditor, syncPreparedItems]);
 
   // Track video play state + current time for the timeline playhead.
   useEffect(() => {
@@ -1469,7 +1442,7 @@ export default function App() {
     return false;
   }, [activeClipId, playbackEntries]);
 
-  // Playback skip-over-cuts + auto-advance to next clip.
+  // Playback bounds + auto-advance to next clip.
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !activeTranscriptItems.length || activeClip?.status !== "ready") return;
@@ -1489,24 +1462,8 @@ export default function App() {
         if (!advanceToNextClip()) video.pause();
         return;
       }
-      if (!video.paused && activeTimeline.length) {
-        const target = nextKeptTime(activeTimeline, t);
-        if (target === Number.POSITIVE_INFINITY) {
-          if (!advanceToNextClip()) video.pause();
-          return;
-        }
-        if (target !== null) {
-          video.currentTime = target;
-          setVideoTime(target);
-          setSequenceTime(sourceTimeToSequenceTime(sequenceClips, activeClipId, target));
-          syncPreviewAudio(0);
-          return;
-        }
-      }
-
       let found = null;
       for (const it of activeTranscriptItems) {
-        if (cut.has(it.id)) continue;
         if (t >= it.start - SKIP_EPSILON && t < it.end - SKIP_EPSILON) {
           found = it;
           break;
@@ -1514,7 +1471,7 @@ export default function App() {
         if (it.start > t) break;
       }
 
-      const nextActiveId = found ? found.id : activeId && cut.has(activeId) ? null : activeId;
+      const nextActiveId = found ? found.id : activeId;
       if (nextActiveId !== activeId) setActiveId(nextActiveId);
     };
 
@@ -1546,12 +1503,10 @@ export default function App() {
   }, [
     activeId,
     activeClipId,
-    activeTimeline,
     activeTrim,
     activeClip,
     activeTranscriptItems,
     advanceToNextClip,
-    cut,
     sequenceClips,
     setActiveId,
     syncPreviewAudio,
@@ -1584,10 +1539,10 @@ export default function App() {
     activeChipRef.current.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [activeId, isPlaying]);
 
-  const cutSelected = useCallback(() => {
-    if (!selection.size || selectionStats.activeCount <= 0) return;
+  const deleteSelected = useCallback(() => {
+    if (!selection.size) return;
     const next = deleteSequenceTranscriptSelection(sequenceClips, items, selection, () =>
-      makeClipId("cut")
+      makeClipId("delete")
     );
     if (next === sequenceClips || sameClipEditState(sequenceClips, next)) return;
 
@@ -1606,31 +1561,24 @@ export default function App() {
     pushUndoSnapshot,
     selection,
     selection.size,
-    selectionStats.activeCount,
     sequenceClips,
   ]);
 
-  const restoreSelected = useCallback(() => {
-    if (!selection.size || selectionStats.cutCount <= 0) return;
-    pushUndoSnapshot();
-    restoreSelectedInEditor();
-  }, [pushUndoSnapshot, restoreSelectedInEditor, selection.size, selectionStats.cutCount]);
-
   const expandSelectionLeft = useCallback(() => {
     if (!selection.size || !clipEdgeExtensionState.canExtendLeft) return;
-    const next = extendSelectedClipEdges(sequenceClips, items, cut, selection, "left", 0.1);
+    const next = extendSelectedClipEdges(sequenceClips, items, selection, "left", 0.1);
     if (next === sequenceClips || sameClipEditState(sequenceClips, next)) return;
     pushUndoSnapshot();
     setClips(next);
-  }, [clipEdgeExtensionState.canExtendLeft, cut, items, pushUndoSnapshot, selection, sequenceClips]);
+  }, [clipEdgeExtensionState.canExtendLeft, items, pushUndoSnapshot, selection, sequenceClips]);
 
   const expandSelectionRight = useCallback(() => {
     if (!selection.size || !clipEdgeExtensionState.canExtendRight) return;
-    const next = extendSelectedClipEdges(sequenceClips, items, cut, selection, "right", 0.1);
+    const next = extendSelectedClipEdges(sequenceClips, items, selection, "right", 0.1);
     if (next === sequenceClips || sameClipEditState(sequenceClips, next)) return;
     pushUndoSnapshot();
     setClips(next);
-  }, [clipEdgeExtensionState.canExtendRight, cut, items, pushUndoSnapshot, selection, sequenceClips]);
+  }, [clipEdgeExtensionState.canExtendRight, items, pushUndoSnapshot, selection, sequenceClips]);
 
   useEffect(() => {
     const onKey = (event) => {
@@ -1659,8 +1607,7 @@ export default function App() {
       if (event.key === "Backspace" || event.key === "Delete") {
         if (!selection.size) return;
         event.preventDefault();
-        if (selectionStats.activeCount > 0) cutSelected();
-        else restoreSelected();
+        deleteSelected();
         return;
       }
 
@@ -1682,9 +1629,7 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [
     selection,
-    selectionStats,
-    cutSelected,
-    restoreSelected,
+    deleteSelected,
     clearSelection,
     copyOpen,
     activeClip,
@@ -1996,10 +1941,22 @@ export default function App() {
     setSettingsError("");
   }, [settingsState]);
 
+  const toggleAudioProcessing = useCallback((key) => {
+    setAudioProcessing((current) =>
+      normalizeAudioProcessing({
+        ...current,
+        [key]: !Boolean(current?.[key]),
+      })
+    );
+  }, []);
+
   const saveSettings = useCallback(
     async ({ selectedModel: nextModel, audioProcessing: nextAudioProcessing, apiKey }) => {
       const cleanedModel = String(nextModel || selectedModelRef.current || DEFAULT_MODEL).trim();
-      const cleanedAudioProcessing = normalizeAudioProcessing(nextAudioProcessing);
+      const cleanedAudioProcessing =
+        nextAudioProcessing === undefined
+          ? normalizeAudioProcessing(audioProcessing)
+          : normalizeAudioProcessing(nextAudioProcessing);
       const trimmedApiKey = typeof apiKey === "string" ? apiKey.trim() : "";
 
       if (runAiEditAfterKeySaveRef.current && !openRouterSettings.configured && !trimmedApiKey) {
@@ -2051,7 +2008,7 @@ export default function App() {
         setSettingsError(caught instanceof Error ? caught.message : String(caught));
       }
     },
-    [aiEditModel, openRouterSettings.configured, runAiEdit]
+    [aiEditModel, audioProcessing, openRouterSettings.configured, runAiEdit]
   );
 
   const copyText = useCallback(async () => {
@@ -2272,9 +2229,12 @@ export default function App() {
         canAiEdit={hasReadyClips && !isRendering && !isAiEditing && !isAnyTranscribing}
         canRender={renderClips.length > 0 && !isRendering && !isAiEditing}
         isBusy={isRendering || isAiEditing}
+        audioProcessing={audioProcessing}
+        audioProcessingDisabled={isAnyTranscribing}
         onProjectNameChange={renameCurrentProject}
         onToggleSidebar={toggleSidebar}
         onFilesSelected={addClipsFromFiles}
+        onToggleAudioProcessing={toggleAudioProcessing}
         onOpenCopy={() => setCopyOpen(true)}
         onAutoEdit={() => runAiEdit()}
         onRenderAndDownload={openExportModal}
@@ -2304,7 +2264,6 @@ export default function App() {
           hasTranscript={hasActiveTranscript}
           sourceDuration={activeDuration}
           items={activeTranscriptItems}
-          cut={cut}
           durations={activeDurations}
           error={activeError}
           mediaSources={mediaSources}
@@ -2320,7 +2279,6 @@ export default function App() {
           statusText={statusText}
           transcriptRef={transcriptRef}
           items={items}
-          cut={cut}
           selection={selection}
           activeId={activeId}
           activeChipRef={activeChipRef}
@@ -2331,8 +2289,7 @@ export default function App() {
           onTranscriptPointerLeave={() => {
             draggingRef.current = false;
           }}
-          onCut={cutSelected}
-          onRestore={restoreSelected}
+          onDelete={deleteSelected}
           canExtendLeft={clipEdgeExtensionState.canExtendLeft}
           canExtendRight={clipEdgeExtensionState.canExtendRight}
           onExpandLeft={expandSelectionLeft}
@@ -2406,7 +2363,6 @@ export default function App() {
         error={settingsError}
         modelOptions={modelOptions}
         selectedModel={selectedModel}
-        audioProcessing={audioProcessing}
         openRouterSettings={openRouterSettings}
         onSave={saveSettings}
         onClose={closeSettingsModal}

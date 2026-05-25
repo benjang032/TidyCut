@@ -1,18 +1,9 @@
 import { useCallback, useMemo, useReducer } from "react";
-import {
-  buildItems,
-  computeTimeline,
-  countWords,
-  getDurations,
-  getPlainText,
-  getSelectionStats,
-  rangeIdsBetween,
-} from "./editorModel";
+import { buildItems, countWords, rangeIdsBetween } from "./editorModel";
 
 function emptyState() {
   return {
     items: [],
-    cut: new Set(),
     selection: new Set(),
     anchorId: null,
     activeId: null,
@@ -46,9 +37,8 @@ function sameSet(a, b) {
   return true;
 }
 
-function syncPreparedState(state, items, cut) {
+function syncPreparedState(state, items) {
   const nextItems = Array.isArray(items) ? items : [];
-  const nextCut = new Set(cut || []);
   const validIds = new Set(nextItems.map((item) => item.id));
   const selection = new Set([...state.selection].filter((id) => validIds.has(id)));
   const anchorId = state.anchorId && validIds.has(state.anchorId) ? state.anchorId : null;
@@ -57,7 +47,6 @@ function syncPreparedState(state, items, cut) {
 
   if (
     sameItems(state.items, nextItems) &&
-    sameSet(state.cut, nextCut) &&
     sameSet(state.selection, selection) &&
     state.anchorId === anchorId &&
     state.activeId === activeId
@@ -67,11 +56,38 @@ function syncPreparedState(state, items, cut) {
 
   return {
     items: nextItems,
-    cut: nextCut,
     selection,
     anchorId,
     activeId,
   };
+}
+
+function getVisibleDurations(items) {
+  const total = items.reduce((sum, item) => sum + Math.max(0, item.end - item.start), 0);
+  return { total, cut: 0, kept: total };
+}
+
+function getVisibleSelectionStats(items, selection) {
+  const selected = selection instanceof Set ? selection : new Set(selection || []);
+  let words = 0;
+  let gaps = 0;
+  for (const item of items) {
+    if (!selected.has(item.id)) continue;
+    if (item.kind === "gap") gaps += 1;
+    else words += 1;
+  }
+  return {
+    size: selected.size,
+    words,
+    gaps,
+  };
+}
+
+function getVisiblePlainText(items) {
+  return items
+    .filter((item) => item.kind === "word")
+    .map((item) => item.text)
+    .join(" ");
 }
 
 function editorReducer(state, action) {
@@ -90,12 +106,11 @@ function editorReducer(state, action) {
       return {
         ...emptyState(),
         items: action.items,
-        cut: new Set(action.cut || []),
         activeId: action.items[0]?.id || null,
       };
 
     case "syncPreparedItems":
-      return syncPreparedState(state, action.items, action.cut);
+      return syncPreparedState(state, action.items);
 
     case "selectSingle":
       return {
@@ -134,28 +149,6 @@ function editorReducer(state, action) {
         anchorId: null,
       };
 
-    case "cutSelection": {
-      if (!state.selection.size) return state;
-      const cut = new Set(state.cut);
-      for (const id of state.selection) cut.add(id);
-      return {
-        ...state,
-        cut,
-        selection: new Set(),
-        anchorId: null,
-      };
-    }
-
-    case "restoreSelection": {
-      if (!state.selection.size) return state;
-      const cut = new Set(state.cut);
-      for (const id of state.selection) cut.delete(id);
-      return {
-        ...state,
-        cut,
-      };
-    }
-
     case "setActive":
       return {
         ...state,
@@ -177,15 +170,15 @@ export function useTranscriptEditor() {
     return { items, wordCount: countWords(items) };
   }, []);
 
-  const loadPreparedItems = useCallback((items, cut = new Set()) => {
+  const loadPreparedItems = useCallback((items) => {
     const preparedItems = Array.isArray(items) ? items : [];
-    dispatch({ type: "loadPreparedItems", items: preparedItems, cut });
+    dispatch({ type: "loadPreparedItems", items: preparedItems });
     return { items: preparedItems, wordCount: countWords(preparedItems) };
   }, []);
 
-  const syncPreparedItems = useCallback((items, cut = new Set()) => {
+  const syncPreparedItems = useCallback((items) => {
     const preparedItems = Array.isArray(items) ? items : [];
-    dispatch({ type: "syncPreparedItems", items: preparedItems, cut });
+    dispatch({ type: "syncPreparedItems", items: preparedItems });
     return { items: preparedItems, wordCount: countWords(preparedItems) };
   }, []);
 
@@ -209,29 +202,19 @@ export function useTranscriptEditor() {
     dispatch({ type: "clearSelection" });
   }, []);
 
-  const cutSelected = useCallback(() => {
-    dispatch({ type: "cutSelection" });
-  }, []);
-
-  const restoreSelected = useCallback(() => {
-    dispatch({ type: "restoreSelection" });
-  }, []);
-
   const setActiveId = useCallback((id) => {
     dispatch({ type: "setActive", id });
   }, []);
 
-  const timeline = useMemo(() => computeTimeline(state.items, state.cut), [state.items, state.cut]);
-  const durations = useMemo(() => getDurations(state.items, state.cut), [state.items, state.cut]);
+  const durations = useMemo(() => getVisibleDurations(state.items), [state.items]);
   const selectionStats = useMemo(
-    () => getSelectionStats(state.items, state.cut, state.selection),
-    [state.items, state.cut, state.selection]
+    () => getVisibleSelectionStats(state.items, state.selection),
+    [state.items, state.selection]
   );
-  const plainText = useMemo(() => getPlainText(state.items, state.cut), [state.items, state.cut]);
+  const plainText = useMemo(() => getVisiblePlainText(state.items), [state.items]);
 
   return {
     ...state,
-    timeline,
     durations,
     selectionStats,
     plainText,
@@ -243,8 +226,6 @@ export function useTranscriptEditor() {
     extendSelection,
     toggleInSelection,
     clearSelection,
-    cutSelected,
-    restoreSelected,
     setActiveId,
   };
 }

@@ -50,16 +50,123 @@ function normalizeItem(item, index) {
   };
 }
 
-function normalizeCut(cut) {
-  const values = cut instanceof Set ? [...cut] : Array.isArray(cut) ? cut : [];
-  return values.map(stringOrNull).filter(Boolean);
-}
-
 function normalizeTrimEnd(value, trimStart, duration) {
   const trimEnd = finiteNumberOrNull(value);
   if (trimEnd == null) return null;
   if (trimEnd === 0 && duration > trimStart) return null;
   return trimEnd;
+}
+
+function roundSeconds(value) {
+  return Number(Number(value).toFixed(3));
+}
+
+function legacyCutIdSet(cut) {
+  const values = cut instanceof Set ? [...cut] : Array.isArray(cut) ? cut : [];
+  return new Set(values.map(stringOrNull).filter(Boolean));
+}
+
+function clipTrimRange(clip) {
+  const items = Array.isArray(clip?.items) ? clip.items : [];
+  const itemEnd = items.length ? finiteNumber(items.at(-1)?.end) : 0;
+  const duration = finiteNumber(clip?.duration, itemEnd);
+  const fallbackEnd = duration > 0 ? duration : itemEnd;
+  const trimStart = Math.max(0, finiteNumber(clip?.trimStart));
+  const trimEndRaw = finiteNumberOrNull(clip?.trimEnd);
+  const trimEnd = trimEndRaw == null ? fallbackEnd : Math.max(0, trimEndRaw);
+  if (fallbackEnd <= 0) {
+    return {
+      start: Math.min(trimStart, trimEnd),
+      end: Math.max(trimStart, trimEnd),
+      sourceEnd: fallbackEnd,
+    };
+  }
+  const start = Math.min(Math.max(0, trimStart), fallbackEnd);
+  const end = Math.min(Math.max(0, trimEnd), fallbackEnd);
+  return {
+    start: Math.min(start, end),
+    end: Math.max(start, end),
+    sourceEnd: fallbackEnd,
+  };
+}
+
+function mergeSourceRanges(ranges) {
+  const merged = [];
+  for (const range of ranges) {
+    const start = finiteNumber(range.start);
+    const end = finiteNumber(range.end);
+    if (end <= start) continue;
+    const previous = merged.at(-1);
+    if (previous && start <= previous.end) {
+      previous.end = Math.max(previous.end, end);
+    } else {
+      merged.push({ start, end });
+    }
+  }
+  return merged;
+}
+
+function legacyCutRanges(clip, cutIds, trimRange) {
+  const ranges = [];
+  let current = null;
+  const items = [...(clip?.items || [])].sort(
+    (a, b) =>
+      finiteNumber(a?.start) - finiteNumber(b?.start) ||
+      finiteNumber(a?.end) - finiteNumber(b?.end)
+  );
+
+  for (const item of items) {
+    if (!cutIds.has(item.id)) {
+      current = null;
+      continue;
+    }
+
+    const start = Math.max(finiteNumber(item.start), trimRange.start);
+    const end = Math.min(finiteNumber(item.end), trimRange.end);
+    if (end <= start) continue;
+
+    if (!current) {
+      current = { start, end };
+      ranges.push(current);
+    } else {
+      current.end = Math.max(current.end, end);
+    }
+  }
+
+  return mergeSourceRanges(ranges);
+}
+
+function subtractSourceRanges(range, rangesToRemove) {
+  const kept = [];
+  let cursor = range.start;
+  for (const removal of mergeSourceRanges(rangesToRemove)) {
+    const start = Math.max(range.start, removal.start);
+    const end = Math.min(range.end, removal.end);
+    if (end <= cursor) continue;
+    if (start > cursor) kept.push({ start: cursor, end: start });
+    cursor = Math.max(cursor, end);
+  }
+  if (cursor < range.end) kept.push({ start: cursor, end: range.end });
+  return kept;
+}
+
+function migrateLegacyCutClip(clip, rawCut, index) {
+  const cutIds = legacyCutIdSet(rawCut);
+  if (!cutIds.size || !Array.isArray(clip?.items) || !clip.items.length) return [clip];
+
+  const range = clipTrimRange(clip);
+  if (range.end <= range.start) return [clip];
+
+  const cutRanges = legacyCutRanges(clip, cutIds, range);
+  if (!cutRanges.length) return [clip];
+
+  const keptRanges = subtractSourceRanges(range, cutRanges);
+  return keptRanges.map((kept, keptIndex) => ({
+    ...clip,
+    id: keptIndex === 0 ? clip.id : `${clip.id}_migrated_${index}_${keptIndex}`,
+    trimStart: roundSeconds(kept.start),
+    trimEnd: Math.abs(kept.end - range.sourceEnd) <= 0.001 ? null : roundSeconds(kept.end),
+  }));
 }
 
 export function cleanProjectName(name) {
@@ -82,7 +189,6 @@ export function serializeClipForProject(clip, index = 0) {
   const id = stringOrNull(clip?.id) || `clip_${index}`;
   const mediaSourceId = stringOrNull(clip?.mediaSourceId);
   const items = Array.isArray(clip?.items) ? clip.items.map(normalizeItem) : [];
-  const cut = normalizeCut(clip?.cut);
   const status = RESTORABLE_STATUSES.has(clip?.status) ? clip.status : items.length ? "ready" : "queued";
   const duration = finiteNumber(clip?.duration);
   const trimStart = finiteNumber(clip?.trimStart);
@@ -101,7 +207,6 @@ export function serializeClipForProject(clip, index = 0) {
     duration,
     wordCount: finiteNumberOrNull(clip?.wordCount),
     items,
-    cut,
     trimStart,
     trimEnd: normalizeTrimEnd(clip?.trimEnd, trimStart, duration),
     status,
@@ -131,7 +236,6 @@ function normalizeMediaSourceForProject(clip, index = 0) {
         mediaSourceId: id,
         trimStart: 0,
         trimEnd: null,
-        cut: [],
       },
       index
     ),
@@ -139,7 +243,6 @@ function normalizeMediaSourceForProject(clip, index = 0) {
     mediaSourceId: id,
     trimStart: 0,
     trimEnd: null,
-    cut: [],
   };
 }
 
@@ -191,7 +294,6 @@ export function serializeProjectDocument({
 
 export function hydrateClipFromProject(rawClip, index = 0) {
   const clip = serializeClipForProject(rawClip, index);
-  const cut = new Set(clip.cut);
   const projectId = stringOrNull(clip.projectId);
   const hasPersistedTranscript = projectId && clip.items.length > 0;
   const hasRecoverableSource = projectId && !hasPersistedTranscript;
@@ -200,7 +302,6 @@ export function hydrateClipFromProject(rawClip, index = 0) {
   return {
     ...clip,
     videoUrl: projectId ? `/api/projects/${projectId}/video` : "",
-    cut,
     status,
     error:
       status === "error"
@@ -232,7 +333,6 @@ function normalizeHydratedMediaSource(clip, index = 0) {
     mediaSourceId: id,
     trimStart: 0,
     trimEnd: null,
-    cut: new Set(),
     aiEdit: undefined,
   };
 }
@@ -276,7 +376,9 @@ export function hydrateProjectDocument(rawDocument) {
   const now = Date.now();
   const id = stringOrNull(rawDocument?.id);
   const hydratedClips = Array.isArray(rawDocument?.clips)
-    ? rawDocument.clips.map((clip, index) => hydrateClipFromProject(clip, index))
+    ? rawDocument.clips.flatMap((clip, index) =>
+        migrateLegacyCutClip(hydrateClipFromProject(clip, index), clip?.cut, index)
+      )
     : [];
   const persistedSources = Array.isArray(rawDocument?.mediaSources)
     ? rawDocument.mediaSources

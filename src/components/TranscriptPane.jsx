@@ -1,12 +1,5 @@
 import { Fragment } from "react";
-import {
-  FileVideo,
-  Loader2,
-  MoveLeft,
-  MoveRight,
-  Scissors,
-  Undo2,
-} from "lucide-react";
+import { FileVideo, Loader2, MoveLeft, MoveRight, Scissors } from "lucide-react";
 import { formatClock, formatPauseLabel } from "../editorModel";
 
 export function TranscriptPane({
@@ -15,7 +8,6 @@ export function TranscriptPane({
   statusText,
   transcriptRef,
   items,
-  cut,
   selection,
   activeId,
   activeChipRef,
@@ -24,8 +16,7 @@ export function TranscriptPane({
   onTokenPointerDown,
   onTokenPointerEnter,
   onTranscriptPointerLeave,
-  onCut,
-  onRestore,
+  onDelete,
   canExtendLeft,
   canExtendRight,
   onExpandLeft,
@@ -60,7 +51,6 @@ export function TranscriptPane({
                   <Token
                     item={item}
                     isSelected={selection.has(item.id)}
-                    isCut={cut.has(item.id)}
                     isActive={activeId === item.id}
                     activeRef={activeId === item.id ? activeChipRef : null}
                     onPointerDown={onTokenPointerDown}
@@ -87,8 +77,7 @@ export function TranscriptPane({
       {hasSelection ? (
         <SelectionBar
           stats={selectionStats}
-          onCut={onCut}
-          onRestore={onRestore}
+          onDelete={onDelete}
           canExtendLeft={canExtendLeft}
           canExtendRight={canExtendRight}
           onExpandLeft={onExpandLeft}
@@ -132,10 +121,9 @@ function TranscriptionProgress({ progress, statusText }) {
   );
 }
 
-function Token({ item, isSelected, isCut, isActive, activeRef, onPointerDown, onPointerEnter }) {
+function Token({ item, isSelected, isActive, activeRef, onPointerDown, onPointerEnter }) {
   const classes = ["tok", `tok-${item.kind}`];
   if (isSelected) classes.push("is-selected");
-  if (isCut) classes.push("is-cut");
   if (isActive) classes.push("is-active");
 
   if (item.kind === "gap") {
@@ -167,8 +155,7 @@ function Token({ item, isSelected, isCut, isActive, activeRef, onPointerDown, on
 
 function SelectionBar({
   stats,
-  onCut,
-  onRestore,
+  onDelete,
   canExtendLeft,
   canExtendRight,
   onExpandLeft,
@@ -198,26 +185,14 @@ function SelectionBar({
         >
           <MoveRight size={15} />
         </button>
-        {stats.activeCount > 0 ? (
-          <button
-            className="selection-tool selection-tool-cut"
-            onClick={onCut}
-            title="Delete selection"
-            aria-label="Delete selection"
-          >
-            <Scissors size={15} />
-          </button>
-        ) : null}
-        {stats.cutCount > 0 ? (
-          <button
-            className="selection-tool"
-            onClick={onRestore}
-            title="Restore selection"
-            aria-label="Restore selection"
-          >
-            <Undo2 size={15} />
-          </button>
-        ) : null}
+        <button
+          className="selection-tool selection-tool-delete"
+          onClick={onDelete}
+          title="Delete selection"
+          aria-label="Delete selection"
+        >
+          <Scissors size={15} />
+        </button>
       </div>
     </div>
   );

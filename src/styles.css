@@ -12,8 +12,6 @@
   --accent-soft: rgba(196, 255, 58, 0.16);
   --accent-strong: rgba(196, 255, 58, 0.3);
   --accent-ink: #07080a;
-  --cut: #ff5b62;
-  --cut-soft: rgba(255, 91, 98, 0.14);
   --pause: #6ad4ff;
   --pause-soft: rgba(106, 212, 255, 0.14);
   --busy: #f5c14a;
@@ -118,6 +116,15 @@ code {
   align-items: center;
   display: flex;
   gap: 4px;
+}
+
+.topbar-audio-controls {
+  align-items: center;
+  border-right: 1px solid var(--hairline);
+  display: flex;
+  gap: 4px;
+  margin-right: 4px;
+  padding-right: 8px;
 }
 
 .project-control {
@@ -232,10 +239,6 @@ code {
   font-weight: 500;
 }
 
-.stat-cut .stat-value {
-  color: var(--cut);
-}
-
 .stat-keep .stat-value {
   color: var(--accent);
 }
@@ -301,16 +304,6 @@ code {
 .btn.icon:hover {
   background: var(--surface-3);
   color: var(--text);
-}
-
-.btn.cut {
-  background: var(--cut-soft);
-  color: var(--danger);
-  font-weight: 600;
-}
-
-.btn.cut:hover {
-  background: rgba(255, 91, 98, 0.22);
 }
 
 .btn.play {
@@ -550,11 +543,6 @@ code {
 .ribbon-gap {
   background: var(--pause);
   opacity: 0.45;
-}
-
-.ribbon-cell.is-cut {
-  background: rgba(255, 91, 98, 0.55);
-  opacity: 1;
 }
 
 .ribbon-meta {
@@ -884,37 +872,6 @@ code {
 .settings-field input:focus,
 .settings-field select:focus {
   box-shadow: 0 0 0 2px var(--accent-strong);
-}
-
-.settings-checks {
-  display: grid;
-  gap: 8px;
-  grid-template-columns: 1fr 1fr;
-}
-
-.settings-check {
-  align-items: center;
-  background: var(--surface-2);
-  border-radius: 7px;
-  color: var(--text-muted);
-  display: inline-flex;
-  gap: 8px;
-  min-height: 38px;
-  justify-content: center;
-  padding: 0 12px;
-  transition: background 0.14s ease, color 0.14s ease;
-}
-
-.settings-check:hover:not(:disabled),
-.settings-check:focus-visible {
-  background: var(--surface-3);
-  color: var(--text);
-  outline: 0;
-}
-
-.settings-check.is-on {
-  background: var(--accent-soft);
-  color: var(--accent);
 }
 
 .settings-summary {

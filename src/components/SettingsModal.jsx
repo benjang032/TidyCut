@@ -1,4 +1,4 @@
-import { AudioLines, KeyRound, Loader2, Volume2, X } from "lucide-react";
+import { KeyRound, Loader2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 export function SettingsModal({
@@ -7,13 +7,11 @@ export function SettingsModal({
   error,
   modelOptions,
   selectedModel,
-  audioProcessing,
   openRouterSettings,
   onSave,
   onClose,
 }) {
   const [draftModel, setDraftModel] = useState(selectedModel || "");
-  const [draftAudioProcessing, setDraftAudioProcessing] = useState(audioProcessing || {});
   const [apiKey, setApiKey] = useState("");
   const selectRef = useRef(null);
 
@@ -23,9 +21,8 @@ export function SettingsModal({
       return;
     }
     setDraftModel(selectedModel || modelOptions?.[0]?.value || "");
-    setDraftAudioProcessing(audioProcessing || {});
     requestAnimationFrame(() => selectRef.current?.focus());
-  }, [audioProcessing, modelOptions, open, selectedModel]);
+  }, [modelOptions, open, selectedModel]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -43,19 +40,11 @@ export function SettingsModal({
   const keySource = openRouterSettings?.keySource || "none";
   const aiEditModel = openRouterSettings?.model || "Default";
 
-  const toggleAudio = (key) => {
-    setDraftAudioProcessing((current) => ({
-      ...current,
-      [key]: !Boolean(current?.[key]),
-    }));
-  };
-
   const submit = (event) => {
     event.preventDefault();
     if (isSaving) return;
     onSave({
       selectedModel: draftModel,
-      audioProcessing: draftAudioProcessing,
       apiKey,
     });
   };
@@ -103,29 +92,6 @@ export function SettingsModal({
               ))}
             </select>
           </label>
-
-          <div className="settings-checks" aria-label="Audio processing">
-            <button
-              type="button"
-              className={`settings-check${draftAudioProcessing?.denoise ? " is-on" : ""}`}
-              aria-pressed={Boolean(draftAudioProcessing?.denoise)}
-              disabled={isSaving}
-              onClick={() => toggleAudio("denoise")}
-            >
-              <AudioLines size={16} />
-              <span>Denoise</span>
-            </button>
-            <button
-              type="button"
-              className={`settings-check${draftAudioProcessing?.normalize ? " is-on" : ""}`}
-              aria-pressed={Boolean(draftAudioProcessing?.normalize)}
-              disabled={isSaving}
-              onClick={() => toggleAudio("normalize")}
-            >
-              <Volume2 size={16} />
-              <span>Normalize</span>
-            </button>
-          </div>
 
           <label className="settings-field">
             <span>OpenRouter API key</span>

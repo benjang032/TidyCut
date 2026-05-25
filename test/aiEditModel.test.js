@@ -22,18 +22,16 @@ function readyClip(overrides = {}) {
       { id: "w3", kind: "word", text: "Second", start: 6, end: 6.4 },
       { id: "w4", kind: "word", text: "take", start: 6.5, end: 7 },
     ],
-    cut: new Set(),
     ...overrides,
   };
 }
 
 describe("AI edit model", () => {
-  it("builds a transcript/timestamp request from visible uncut items", () => {
+  it("builds a transcript/timestamp request from visible source-range items", () => {
     const requestClips = buildAiEditRequestClips([
       readyClip({
         trimStart: 1,
         trimEnd: 7,
-        cut: new Set(["w2"]),
       }),
     ]);
 
@@ -43,7 +41,7 @@ describe("AI edit model", () => {
     assert.equal(requestClips[0].trim_end, 7);
     assert.deepEqual(
       requestClips[0].transcript_items.map((item) => item.id),
-      ["w1", "g1", "w3", "w4"]
+      ["w1", "g1", "w2", "w3", "w4"]
     );
     assert.match(requestClips[0].transcript_items[1].text, /\[pause 700ms\]/);
   });
@@ -75,7 +73,7 @@ describe("AI edit model", () => {
   });
 
   it("applies a scene timeline as cloned whole-scene clips", () => {
-    const source = readyClip({ cut: new Set(["g1"]) });
+    const source = readyClip();
     const result = applyAiEditPlanToClips(
       [source],
       {
@@ -114,8 +112,7 @@ describe("AI edit model", () => {
         ["ai-2", 6, 7],
       ]
     );
-    assert.ok(result.clips[0].cut instanceof Set);
-    assert.ok(result.clips[0].cut.has("g1"));
+    assert.equal(Object.hasOwn(result.clips[0], "cut"), false);
     assert.equal(result.clips[1].aiEdit.reason, "Best repeated take");
   });
 });

@@ -3,12 +3,6 @@ import { getClipTrimRange } from "./sequenceModel.js";
 export const AI_EDIT_URL = "/api/ai/edit-plan";
 export const OPENROUTER_SETTINGS_URL = "/api/settings/openrouter";
 
-function asSet(value) {
-  if (value instanceof Set) return value;
-  if (Array.isArray(value)) return new Set(value);
-  return new Set();
-}
-
 function finiteNumber(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
@@ -33,12 +27,8 @@ function itemCenterInRange(item, range) {
 
 function clipVisibleTranscriptItems(clip) {
   const range = getClipTrimRange(clip);
-  const cut = asSet(clip?.cut);
   return (Array.isArray(clip?.items) ? clip.items : [])
-    .filter((item) => {
-      if (!itemOverlapsRange(item, range) || !itemCenterInRange(item, range)) return false;
-      return !cut.has(item.id);
-    })
+    .filter((item) => itemOverlapsRange(item, range) && itemCenterInRange(item, range))
     .map((item) => {
       const start = Math.max(finiteNumber(item.start), range.start);
       const end = Math.min(finiteNumber(item.end), range.end);
@@ -115,7 +105,6 @@ export function normalizeAiEditPlan(plan, sourceClips = []) {
     editingMode: String(plan?.editing_mode || "coherence_story_v1"),
     summary: String(plan?.summary || "").trim(),
     timeline,
-    removed: Array.isArray(plan?.removed) ? plan.removed : [],
     warnings: Array.isArray(plan?.warnings) ? plan.warnings : [],
   };
 }
@@ -136,7 +125,6 @@ export function applyAiEditPlanToClips(sourceClips = [], plan, makeClipId) {
             : `${sourceClip.id}_ai_${index + 1}`,
         trimStart: entry.sourceStart,
         trimEnd: entry.sourceEnd,
-        cut: new Set(asSet(sourceClip.cut)),
         aiEdit: {
           editId: entry.editId,
           sourceClipId: entry.sourceClipId,

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  applySequenceTranscriptCut,
   buildSequenceRenderClips,
   buildSequencePlaybackEntries,
   getClipTimeline,
@@ -13,7 +12,6 @@ import {
   getSelectedClipEdgeExtensionState,
   getSequenceDurations,
   getSequencePlainText,
-  getSequenceTranscriptCut,
   isSequencePlaybackComplete,
   moveClipBefore,
   sequenceTimeToSourceTime,
@@ -30,14 +28,12 @@ describe("sequence model", () => {
       { id: "a1", kind: "word", text: "first", start: 0, end: 1 },
       { id: "a2", kind: "word", text: "drop", start: 1, end: 2 },
     ],
-    cut: new Set(["a2"]),
   };
   const clipB = {
     id: "clip-b",
     projectId: "project-b",
     fileName: "b.mov",
     items: [{ id: "b1", kind: "word", text: "second", start: 4, end: 5 }],
-    cut: new Set(),
   };
 
   it("builds a multi-project render plan from clip state", () => {
@@ -46,24 +42,24 @@ describe("sequence model", () => {
         clipId: "clip-a",
         projectId: "project-a",
         label: "a.mov",
-        timeline: [{ source_start: 0, source_end: 1 }],
+        timeline: [{ source_start: 0, source_end: 2 }],
       },
       {
         clipId: "clip-b",
         projectId: "project-b",
         label: "b.mov",
-        timeline: [{ source_start: 4, source_end: 5 }],
+        timeline: [{ source_start: 0, source_end: 5 }],
       },
     ]);
   });
 
   it("sums durations and exported text across the sequence", () => {
     assert.deepEqual(getSequenceDurations([clipA, clipB]), {
-      total: 3,
-      cut: 1,
-      kept: 2,
+      total: 7,
+      cut: 0,
+      kept: 7,
     });
-    assert.equal(getSequencePlainText([clipA, clipB]), "first\n\nsecond");
+    assert.equal(getSequencePlainText([clipA, clipB]), "first drop\n\nsecond");
   });
 
   it("moves clips before a target without mutating the original array", () => {
@@ -87,7 +83,6 @@ describe("sequence model", () => {
       trimStart: 0.5,
       trimEnd: 1.5,
       items: [{ id: "w1", kind: "word", text: "hello", start: 0, end: 2 }],
-      cut: new Set(),
     };
 
     assert.deepEqual(buildSequenceRenderClips([clip]), [
@@ -117,7 +112,6 @@ describe("sequence model", () => {
         { id: "w1", kind: "word", text: "hi", start: 7.42, end: 7.9 },
         { id: "w2", kind: "word", text: "there", start: 8.1, end: 8.4 },
       ],
-      cut: new Set(),
       status: "ready",
     };
 
@@ -130,91 +124,6 @@ describe("sequence model", () => {
       cut: 0,
       kept: 15.3,
     });
-  });
-
-  it("cuts transcript items without dropping untranscribed source media", () => {
-    const clip = {
-      id: "clip-cut-late-word",
-      projectId: "project-cut-late-word",
-      fileName: "cut-late-word.mov",
-      duration: 15.3,
-      trimStart: 0,
-      trimEnd: null,
-      items: [
-        { id: "w1", kind: "word", text: "hi", start: 7.42, end: 7.9 },
-        { id: "w2", kind: "word", text: "there", start: 8.1, end: 8.4 },
-      ],
-      cut: new Set(["w1"]),
-      status: "ready",
-    };
-
-    assert.deepEqual(getClipTimeline(clip), [
-      { source_start: 0, source_end: 7.42 },
-      { source_start: 7.9, source_end: 15.3 },
-    ]);
-    const durations = getSequenceDurations([clip]);
-    assert.equal(durations.total, 15.3);
-    assert.equal(Number(durations.cut.toFixed(2)), 0.48);
-    assert.equal(Number(durations.kept.toFixed(2)), 14.82);
-  });
-
-  it("cuts the full span between consecutive cut transcript items", () => {
-    const clip = {
-      id: "clip-cut-adjacent-words",
-      projectId: "project-cut-adjacent-words",
-      fileName: "cut-adjacent-words.mov",
-      duration: 4,
-      trimStart: 0,
-      trimEnd: null,
-      items: [
-        { id: "w1", kind: "word", text: "keep", start: 0, end: 0.5 },
-        { id: "w2", kind: "word", text: "drop", start: 1, end: 1.2 },
-        { id: "w3", kind: "word", text: "these", start: 1.35, end: 1.5 },
-        { id: "w4", kind: "word", text: "tail", start: 2, end: 2.4 },
-      ],
-      cut: new Set(["w2", "w3"]),
-      status: "ready",
-    };
-
-    assert.deepEqual(getClipTimeline(clip), [
-      { source_start: 0, source_end: 1 },
-      { source_start: 1.5, source_end: 4 },
-    ]);
-    assert.deepEqual(getSequenceDurations([clip]), {
-      total: 4,
-      cut: 0.5,
-      kept: 3.5,
-    });
-  });
-
-  it("keeps an uncut pause block between separately cut words", () => {
-    const clip = {
-      id: "clip-keep-uncut-pause",
-      projectId: "project-keep-uncut-pause",
-      fileName: "keep-uncut-pause.mov",
-      duration: 4,
-      trimStart: 0,
-      trimEnd: null,
-      items: [
-        { id: "w1", kind: "word", text: "keep", start: 0, end: 0.5 },
-        { id: "w2", kind: "word", text: "drop", start: 1, end: 1.2 },
-        { id: "g1", kind: "gap", text: "", start: 1.2, end: 1.8 },
-        { id: "w3", kind: "word", text: "drop", start: 1.8, end: 2 },
-        { id: "w4", kind: "word", text: "tail", start: 2.5, end: 3 },
-      ],
-      cut: new Set(["w2", "w3"]),
-      status: "ready",
-    };
-
-    assert.deepEqual(getClipTimeline(clip), [
-      { source_start: 0, source_end: 1 },
-      { source_start: 1.2, source_end: 1.8 },
-      { source_start: 2, source_end: 4 },
-    ]);
-    const durations = getSequenceDurations([clip]);
-    assert.equal(durations.total, 4);
-    assert.equal(Number(durations.cut.toFixed(1)), 0.4);
-    assert.equal(Number(durations.kept.toFixed(1)), 3.6);
   });
 
   it("builds a visible sequence transcript across trimmed clips", () => {
@@ -256,37 +165,25 @@ describe("sequence model", () => {
           sequenceEnd: 0.5,
         },
         {
+          id: "clip-a::a2",
+          sourceId: "a2",
+          clipId: "clip-a",
+          start: 1,
+          end: 2,
+          sequenceStart: 0.5,
+          sequenceEnd: 1.5,
+        },
+        {
           id: "clip-b::b1",
           sourceId: "b1",
           clipId: "clip-b",
           start: 4,
           end: 5,
-          sequenceStart: 0.5,
-          sequenceEnd: 1.5,
+          sequenceStart: 1.5,
+          sequenceEnd: 2.5,
         },
       ]
     );
-  });
-
-  it("maps sequence transcript cuts back to owning clips without losing hidden cuts", () => {
-    const clips = [
-      {
-        ...clipA,
-        trimStart: 0,
-        trimEnd: 1,
-        duration: 2,
-        cut: new Set(["a2"]),
-        status: "ready",
-      },
-      { ...clipB, duration: 5, status: "ready" },
-    ];
-    const items = buildSequenceTranscriptItems(clips);
-    const cut = getSequenceTranscriptCut(clips, items);
-    assert.deepEqual([...cut], []);
-
-    const next = applySequenceTranscriptCut(clips, items, new Set(["clip-a::a1", "clip-b::b1"]));
-    assert.deepEqual([...next[0].cut].sort(), ["a1", "a2"]);
-    assert.deepEqual([...next[1].cut], ["b1"]);
   });
 
   it("deletes transcript selections by trimming and splitting timeline clips", () => {
@@ -302,7 +199,6 @@ describe("sequence model", () => {
         { id: "w2", kind: "word", text: "delete", start: 1, end: 2 },
         { id: "w3", kind: "word", text: "tail", start: 2, end: 3 },
       ],
-      cut: new Set(),
       status: "ready",
     };
     const items = buildSequenceTranscriptItems([clip]);
@@ -314,15 +210,15 @@ describe("sequence model", () => {
     );
 
     assert.deepEqual(
-      next.map(({ id, trimStart, trimEnd, cut }) => ({
-        id,
-        trimStart,
-        trimEnd,
-        cut: [...cut],
+      next.map((clip) => ({
+        id: clip.id,
+        trimStart: clip.trimStart,
+        trimEnd: clip.trimEnd,
+        hasCut: Object.hasOwn(clip, "cut"),
       })),
       [
-        { id: "clip-delete-middle", trimStart: 0, trimEnd: 1, cut: [] },
-        { id: "clip-delete-middle-tail", trimStart: 2, trimEnd: null, cut: [] },
+        { id: "clip-delete-middle", trimStart: 0, trimEnd: 1, hasCut: false },
+        { id: "clip-delete-middle-tail", trimStart: 2, trimEnd: null, hasCut: false },
       ]
     );
     assert.deepEqual(buildSequenceRenderClips(next).map((clip) => clip.timeline), [
@@ -344,7 +240,6 @@ describe("sequence model", () => {
         { id: "w1", kind: "word", text: "only", start: 1, end: 2 },
         { id: "w2", kind: "word", text: "take", start: 3, end: 4 },
       ],
-      cut: new Set(),
       status: "ready",
     };
     const items = buildSequenceTranscriptItems([clip]);
@@ -371,7 +266,6 @@ describe("sequence model", () => {
           trimStart: 0,
           trimEnd: 2,
           items: [{ id: "w1", kind: "word", text: "hello", start: 0, end: 2 }],
-          cut: new Set(),
           status: "ready",
         },
       ],
@@ -410,7 +304,6 @@ describe("sequence model", () => {
             { id: "w1", kind: "word", text: "left", start: 1, end: 3 },
             { id: "w2", kind: "word", text: "right", start: 3, end: 5 },
           ],
-          cut: new Set(),
           status: "ready",
         },
       ],
@@ -473,7 +366,6 @@ describe("sequence model", () => {
             { id: "w1", kind: "word", text: "one", start: 0, end: 1 },
             { id: "w2", kind: "word", text: "two", start: 2, end: 3 },
           ],
-          cut: new Set(),
           status: "ready",
         },
       ],
@@ -502,7 +394,6 @@ describe("sequence model", () => {
           trimStart: 0,
           trimEnd: null,
           items: [{ id: "w1", kind: "word", text: "center", start: 1, end: 3 }],
-          cut: new Set(),
           status: "ready",
         },
       ],
@@ -535,7 +426,6 @@ describe("sequence model", () => {
           { id: "w1", kind: "word", text: "first", start: 2, end: 3 },
           { id: "w2", kind: "word", text: "middle", start: 3, end: 4 },
         ],
-        cut: new Set(),
       },
     ];
     const transcriptItems = buildSequenceTranscriptItems(clips);
@@ -544,7 +434,6 @@ describe("sequence model", () => {
       getSelectedClipEdgeExtensionState(
         clips,
         transcriptItems,
-        new Set(),
         new Set(["clip-edge-left::w2"])
       ).canExtendLeft,
       false
@@ -554,7 +443,6 @@ describe("sequence model", () => {
       getSelectedClipEdgeExtensionState(
         clips,
         transcriptItems,
-        new Set(),
         new Set(["clip-edge-left::w1"])
       ).canExtendLeft,
       true
@@ -563,7 +451,6 @@ describe("sequence model", () => {
     const next = extendSelectedClipEdges(
       clips,
       transcriptItems,
-      new Set(),
       new Set(["clip-edge-left::w1"]),
       "left",
       0.1
@@ -571,7 +458,7 @@ describe("sequence model", () => {
     assert.equal(next[0].trimStart, 1.9);
   });
 
-  it("extends clip trim right when only cut items remain to the right", () => {
+  it("extends clip trim right when selection touches the visible right edge", () => {
     const clips = [
       {
         id: "clip-edge-right",
@@ -584,25 +471,20 @@ describe("sequence model", () => {
         items: [
           { id: "w1", kind: "word", text: "first", start: 2, end: 3 },
           { id: "w2", kind: "word", text: "keeper", start: 3, end: 4 },
-          { id: "w3", kind: "word", text: "cut", start: 4, end: 5 },
         ],
-        cut: new Set(["w3"]),
       },
     ];
     const transcriptItems = buildSequenceTranscriptItems(clips);
-    const transcriptCut = getSequenceTranscriptCut(clips, transcriptItems);
     const selection = new Set(["clip-edge-right::w2"]);
 
     assert.equal(
-      getSelectedClipEdgeExtensionState(clips, transcriptItems, transcriptCut, selection)
-        .canExtendRight,
+      getSelectedClipEdgeExtensionState(clips, transcriptItems, selection).canExtendRight,
       true
     );
 
     const next = extendSelectedClipEdges(
       clips,
       transcriptItems,
-      transcriptCut,
       selection,
       "right",
       0.1
@@ -625,19 +507,17 @@ describe("sequence model", () => {
           { id: "w2", kind: "word", text: "middle", start: 3, end: 4 },
           { id: "w3", kind: "word", text: "last", start: 4, end: 5 },
         ],
-        cut: new Set(),
       },
     ];
     const transcriptItems = buildSequenceTranscriptItems(clips);
     const selection = new Set(["clip-edge-blocked::w2"]);
 
     assert.equal(
-      getSelectedClipEdgeExtensionState(clips, transcriptItems, new Set(), selection)
-        .canExtendRight,
+      getSelectedClipEdgeExtensionState(clips, transcriptItems, selection).canExtendRight,
       false
     );
     assert.equal(
-      extendSelectedClipEdges(clips, transcriptItems, new Set(), selection, "right", 0.1),
+      extendSelectedClipEdges(clips, transcriptItems, selection, "right", 0.1),
       clips
     );
   });

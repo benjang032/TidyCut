@@ -534,7 +534,7 @@ function cleanEditProjectClip(clip, index) {
     duration,
     wordCount: finiteNumberOrNull(clip?.wordCount),
     items,
-    cut,
+    ...(cut.length ? { cut } : {}),
     trimStart,
     trimEnd: cleanEditProjectTrimEnd(clip?.trimEnd, trimStart, duration),
     status,
@@ -814,7 +814,7 @@ app.put("/api/settings/openrouter", async (request, response) => {
 const aiEditPlanSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["version", "editing_mode", "summary", "timeline", "removed", "warnings"],
+  required: ["version", "editing_mode", "summary", "timeline", "warnings"],
   properties: {
     version: {
       type: "string",
@@ -867,21 +867,6 @@ const aiEditPlanSchema = {
         },
       },
     },
-    removed: {
-      type: "array",
-      description: "Source ranges intentionally left out of the final edit.",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["source_clip_id", "source_start", "source_end", "reason"],
-        properties: {
-          source_clip_id: { type: "string" },
-          source_start: { type: "number" },
-          source_end: { type: "number" },
-          reason: { type: "string" },
-        },
-      },
-    },
     warnings: {
       type: "array",
       description: "Anything a human editor should review before rendering.",
@@ -906,14 +891,12 @@ const aiEditSystemPrompt = [
   "You receive transcript items with timestamps from raw footage of someone trying to record a coherent video.",
   "The speaker may pause, restart, repeat the same idea, correct themselves, or do multiple takes.",
   "Infer coherent takes/scenes directly from the transcript and timing data.",
-  "Treat every selected range as a continuous video scene, not as editable prose.",
-  "Do not assemble a better sentence by combining individual words, clauses, or half-sentences from different takes.",
+  "Treat every selected range as a continuous video scene, not as editable prose — do not splice individual words or partial clauses across different takes.",
   "A selected scene is valid only if the spoken content and visual performance can plausibly work as one continuous clip.",
   "Prefer complete takes and clean sentence or paragraph boundaries over transcript-perfect micro-edits.",
   "Keep the original order unless there is a strong coherence or storytelling reason to reorder whole scenes.",
-  "If a choice is uncertain, keep the more coherent complete scene and add a warning.",
+  "If a choice is uncertain, keep the more coherent complete scene and add a warning. Use warnings for repeated takes, factual differences, or rough boundaries.",
   "There is no B-roll, so avoid cuts that require visual coverage.",
-  "Use source_clip_id values exactly as provided.",
 ].join("\n");
 
 function roundSeconds(value) {
@@ -1003,26 +986,29 @@ function cleanAiEditRequest(body) {
   };
 }
 
+function formatTranscriptItemForPrompt(item) {
+  return `${item.start.toFixed(2)} ${item.end.toFixed(2)} ${item.text}`;
+}
+
+function formatClipForPrompt(clip) {
+  const header = `## clip_id: ${clip.clip_id} | label: ${clip.label} | visible: ${clip.visible_start.toFixed(3)}-${clip.visible_end.toFixed(3)}s`;
+  const transcript = clip.transcript_items.map(formatTranscriptItemForPrompt).join("\n");
+  return `${header}\n${transcript}`;
+}
+
 function buildAiEditUserPrompt(request) {
-  return JSON.stringify(
-    {
-      task:
-        "Create a first-pass coherence/storytelling edit plan. Remove failed attempts, repeated weaker takes, long dead air, and redundant material. Preserve whole usable video scenes.",
-      editing_rules: [
-        "You may decide the take/scene boundaries yourself.",
-        "Every timeline item must be one continuous source range from one source clip.",
-        "Do not splice individual words or partial clauses across different takes.",
-        "Only cut inside a sentence when the selected range still feels like a complete video scene.",
-        "Prefer a slightly longer coherent take over a jumpy transcript-perfect edit.",
-        "Use warnings for uncertain repeated takes, factual differences, or rough boundaries.",
-      ],
-      mode: request.mode,
-      user_instructions: request.instructions,
-      clips: request.clips,
-    },
-    null,
-    2
+  const sections = [
+    "Task: Create a first-pass coherence/storytelling edit plan. Drop failed attempts, repeated weaker takes, long dead air, and redundant material. Preserve whole usable video scenes.",
+    `Mode: ${request.mode}`,
+  ];
+  if (request.instructions) sections.push(`User instructions: ${request.instructions}`);
+  sections.push(
+    "",
+    "Transcript format: one item per line as `start end text` (seconds within each source clip). Pauses appear as `[pause Xs]`. Set source_clip_id, source_start, and source_end in your output using the clip_id headers and these timestamps.",
+    "",
+    request.clips.map(formatClipForPrompt).join("\n\n")
   );
+  return sections.join("\n");
 }
 
 function extractOpenRouterJson(payload) {
@@ -1159,15 +1145,6 @@ function sanitizeAiTimelineEntry(raw, index, clipRanges) {
   };
 }
 
-function sanitizeAiRemovedEntry(raw, clipRanges) {
-  const range = sanitizeAiRange(raw, clipRanges);
-  if (!range) return null;
-  return {
-    ...range,
-    reason: cleanText(raw?.reason, "Removed by AI edit.", 1000) || "Removed by AI edit.",
-  };
-}
-
 function sanitizeAiWarning(raw, clipRanges) {
   const range = sanitizeAiRange(raw, clipRanges);
   if (!range) return null;
@@ -1209,9 +1186,6 @@ function sanitizeAiEditPlan(rawPlan, request) {
     editing_mode: cleanText(rawPlan?.editing_mode, request.mode, 120) || request.mode,
     summary: cleanText(rawPlan?.summary, "AI generated a first-pass edit.", 2000),
     timeline,
-    removed: (Array.isArray(rawPlan?.removed) ? rawPlan.removed : [])
-      .map((entry) => sanitizeAiRemovedEntry(entry, clipRanges))
-      .filter(Boolean),
     warnings,
   };
 }
