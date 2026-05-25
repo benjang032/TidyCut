@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CopyPanel } from "./components/CopyPanel";
+import { ExportModal } from "./components/ExportModal";
 import { ProjectSidebar } from "./components/ProjectSidebar";
 import { SettingsModal } from "./components/SettingsModal";
 import { Timeline } from "./components/Timeline";
@@ -7,7 +8,7 @@ import { Topbar } from "./components/Topbar";
 import { TranscriptPane } from "./components/TranscriptPane";
 import {
   AI_EDIT_URL,
-  ANTHROPIC_SETTINGS_URL,
+  OPENROUTER_SETTINGS_URL,
   applyAiEditPlanToClips,
   buildAiEditRequestClips,
 } from "./aiEditModel";
@@ -31,6 +32,7 @@ import {
   buildSequencePlaybackEntries,
   buildSequenceRenderClips,
   buildSequenceTranscriptItems,
+  deleteSequenceTranscriptSelection,
   extendSelectedClipEdges,
   getClipDurations,
   getClipTimeline,
@@ -64,6 +66,46 @@ const REFERENCES_URL = "/api/references";
 const AUDIO_PREVIEW_URL = "/api/audio-preview";
 const UNDO_LIMIT = 50;
 const DEFAULT_TRANSCRIPTION_MODEL_STORAGE_KEY = "local-editor:default-transcription-model";
+const DEFAULT_EXPORT_FILE_NAME = "tidycut-export.mp4";
+
+function normalizeExportFileName(fileName, fallback = DEFAULT_EXPORT_FILE_NAME) {
+  const cleanName = String(fileName || "")
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-")
+    .replace(/\s+/g, " ")
+    .replace(/^\.+/, "")
+    .replace(/\.+$/, "");
+  const nextName = cleanName || fallback;
+  return /\.mp4$/i.test(nextName) ? nextName : `${nextName}.mp4`;
+}
+
+function buildDefaultExportFileName(sequenceClips = []) {
+  const firstClip = sequenceClips[0];
+  const sourceName = firstClip?.fileName || "sequence.mp4";
+  const sourceStem = sourceName.replace(/\.[^.]+$/, "") || "sequence";
+  const stem = sequenceClips.length > 1 ? "tidycut-sequence" : sourceStem;
+  return normalizeExportFileName(`${stem}.edit.mp4`);
+}
+
+function downloadBlob(blob, fileName) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+async function writeBlobToFileHandle(fileHandle, blob) {
+  const writable = await fileHandle.createWritable();
+  try {
+    await writable.write(blob);
+  } finally {
+    await writable.close();
+  }
+}
 
 function readLastProjectId() {
   try {
@@ -244,13 +286,14 @@ export default function App() {
   );
   const [renderStatus, setRenderStatus] = useState("idle");
   const [renderError, setRenderError] = useState("");
+  const [exportModalOpen, setExportModalOpen] = useState(false);
   const [aiEditStatus, setAiEditStatus] = useState("idle");
   const [aiEditError, setAiEditError] = useState("");
   const [aiEditNotice, setAiEditNotice] = useState("");
-  const [aiEditModel, setAiEditModel] = useState("claude-opus-4-6");
-  const [anthropicSettings, setAnthropicSettings] = useState({
+  const [aiEditModel, setAiEditModel] = useState("anthropic/claude-opus-4.6");
+  const [openRouterSettings, setOpenRouterSettings] = useState({
     configured: false,
-    model: "claude-opus-4-6",
+    model: "anthropic/claude-opus-4.6",
     keySource: "none",
   });
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
@@ -346,7 +389,6 @@ export default function App() {
     extendSelection,
     toggleInSelection,
     clearSelection,
-    cutSelected: cutSelectedInEditor,
     restoreSelected: restoreSelectedInEditor,
     setActiveId,
   } = editor;
@@ -410,6 +452,12 @@ export default function App() {
     () => buildSequenceRenderClips(sequenceClips),
     [sequenceClips]
   );
+  const defaultExportFileName = useMemo(
+    () => buildDefaultExportFileName(sequenceClips),
+    [sequenceClips]
+  );
+  const canChooseExportDestination =
+    typeof window !== "undefined" && typeof window.showSaveFilePicker === "function";
   const playbackEntries = useMemo(
     () => buildSequencePlaybackEntries(sequenceClips),
     [sequenceClips]
@@ -1184,7 +1232,7 @@ export default function App() {
         }
         if (!cancelled && payload?.aiEdit?.model) {
           setAiEditModel(payload.aiEdit.model);
-          setAnthropicSettings({
+          setOpenRouterSettings({
             configured: Boolean(payload.aiEdit.available),
             model: payload.aiEdit.model,
             keySource: payload.aiEdit.keySource || "none",
@@ -1538,9 +1586,29 @@ export default function App() {
 
   const cutSelected = useCallback(() => {
     if (!selection.size || selectionStats.activeCount <= 0) return;
+    const next = deleteSequenceTranscriptSelection(sequenceClips, items, selection, () =>
+      makeClipId("cut")
+    );
+    if (next === sequenceClips || sameClipEditState(sequenceClips, next)) return;
+
     pushUndoSnapshot();
-    cutSelectedInEditor();
-  }, [cutSelectedInEditor, pushUndoSnapshot, selection.size, selectionStats.activeCount]);
+    clearSelection();
+    pendingMediaSeekRef.current = null;
+    setClips(next);
+
+    if (!activeClipId || next.some((clip) => clip.id === activeClipId)) return;
+    const deletedIndex = sequenceClips.findIndex((clip) => clip.id === activeClipId);
+    setActiveClipId(next[Math.min(Math.max(deletedIndex, 0), next.length - 1)]?.id || null);
+  }, [
+    activeClipId,
+    clearSelection,
+    items,
+    pushUndoSnapshot,
+    selection,
+    selection.size,
+    selectionStats.activeCount,
+    sequenceClips,
+  ]);
 
   const restoreSelected = useCallback(() => {
     if (!selection.size || selectionStats.cutCount <= 0) return;
@@ -1770,8 +1838,30 @@ export default function App() {
     else pauseCurrentMedia();
   }, [pauseCurrentMedia, playFromTimelineIntent]);
 
-  const renderAndDownload = useCallback(async () => {
+  const renderAndDownload = useCallback(async (requestedFileName) => {
     if (!renderClips.length || isRendering) return;
+    const fileName = normalizeExportFileName(requestedFileName, defaultExportFileName);
+    let fileHandle = null;
+
+    if (typeof window.showSaveFilePicker === "function") {
+      try {
+        fileHandle = await window.showSaveFilePicker({
+          suggestedName: fileName,
+          types: [
+            {
+              description: "MP4 video",
+              accept: { "video/mp4": [".mp4"] },
+            },
+          ],
+        });
+      } catch (caught) {
+        if (caught?.name === "AbortError") return;
+        setRenderStatus("error");
+        setRenderError(caught instanceof Error ? caught.message : String(caught));
+        return;
+      }
+    }
+
     setRenderStatus("rendering");
     setRenderError("");
     try {
@@ -1790,29 +1880,35 @@ export default function App() {
       }
 
       const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const firstClip = sequenceClips[0];
-      const sourceName = firstClip?.fileName || "sequence.mp4";
-      const stem =
-        sequenceClips.length > 1 ? "tidycut-sequence" : sourceName.replace(/\.[^.]+$/, "");
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${stem}.edit.mp4`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      if (fileHandle) {
+        await writeBlobToFileHandle(fileHandle, blob);
+      } else {
+        downloadBlob(blob, fileName);
+      }
       setRenderStatus("idle");
+      setExportModalOpen(false);
     } catch (caught) {
       setRenderStatus("error");
       setRenderError(caught instanceof Error ? caught.message : String(caught));
     }
-  }, [audioProcessing, isRendering, renderClips, sequenceClips]);
+  }, [audioProcessing, defaultExportFileName, isRendering, renderClips]);
+
+  const openExportModal = useCallback(() => {
+    if (!renderClips.length || isRendering) return;
+    setRenderError("");
+    if (renderStatus === "error") setRenderStatus("idle");
+    setExportModalOpen(true);
+  }, [isRendering, renderClips.length, renderStatus]);
+
+  const closeExportModal = useCallback(() => {
+    if (isRendering) return;
+    setExportModalOpen(false);
+  }, [isRendering]);
 
   const runAiEdit = useCallback(async (options = {}) => {
     if (isAiEditing || isAnyTranscribing || !hasReadyClips) return;
 
-    if (!options.skipKeyCheck && !anthropicSettings.configured) {
+    if (!options.skipKeyCheck && !openRouterSettings.configured) {
       runAiEditAfterKeySaveRef.current = true;
       setSettingsError("");
       setSettingsState("idle");
@@ -1847,7 +1943,7 @@ export default function App() {
       });
       const payload = await response.json();
       if (!response.ok) {
-        if (payload?.code === "ANTHROPIC_API_KEY_MISSING") {
+        if (payload?.code === "OPENROUTER_API_KEY_MISSING") {
           runAiEditAfterKeySaveRef.current = true;
           setSettingsError("");
           setSettingsState("idle");
@@ -1884,7 +1980,7 @@ export default function App() {
     }
   }, [
     clearSelection,
-    anthropicSettings.configured,
+    openRouterSettings.configured,
     hasReadyClips,
     isAiEditing,
     isAnyTranscribing,
@@ -1906,9 +2002,9 @@ export default function App() {
       const cleanedAudioProcessing = normalizeAudioProcessing(nextAudioProcessing);
       const trimmedApiKey = typeof apiKey === "string" ? apiKey.trim() : "";
 
-      if (runAiEditAfterKeySaveRef.current && !anthropicSettings.configured && !trimmedApiKey) {
+      if (runAiEditAfterKeySaveRef.current && !openRouterSettings.configured && !trimmedApiKey) {
         setSettingsState("error");
-        setSettingsError("Enter your Anthropic API key to use AI edit.");
+        setSettingsError("Enter your OpenRouter API key to use AI edit.");
         return;
       }
 
@@ -1922,27 +2018,27 @@ export default function App() {
       try {
         let savedKey = false;
         if (trimmedApiKey) {
-          const response = await fetch(ANTHROPIC_SETTINGS_URL, {
+          const response = await fetch(OPENROUTER_SETTINGS_URL, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ apiKey: trimmedApiKey }),
           });
           const payload = await response.json();
-          if (!response.ok) throw new Error(payload.error || "Failed to save Anthropic key.");
+          if (!response.ok) throw new Error(payload.error || "Failed to save OpenRouter key.");
 
           const nextSettings = {
             configured: Boolean(payload.configured),
             model: payload.model || aiEditModel,
             keySource: payload.keySource || "local",
           };
-          setAnthropicSettings(nextSettings);
+          setOpenRouterSettings(nextSettings);
           if (nextSettings.model) setAiEditModel(nextSettings.model);
           savedKey = true;
         }
 
         setSettingsState("idle");
         setSettingsModalOpen(false);
-        setAiEditNotice(savedKey ? "Settings saved. Anthropic key updated." : "Settings saved.");
+        setAiEditNotice(savedKey ? "Settings saved. OpenRouter key updated." : "Settings saved.");
 
         if (savedKey && runAiEditAfterKeySaveRef.current) {
           runAiEditAfterKeySaveRef.current = false;
@@ -1955,7 +2051,7 @@ export default function App() {
         setSettingsError(caught instanceof Error ? caught.message : String(caught));
       }
     },
-    [aiEditModel, anthropicSettings.configured, runAiEdit]
+    [aiEditModel, openRouterSettings.configured, runAiEdit]
   );
 
   const copyText = useCallback(async () => {
@@ -2181,7 +2277,7 @@ export default function App() {
         onFilesSelected={addClipsFromFiles}
         onOpenCopy={() => setCopyOpen(true)}
         onAutoEdit={() => runAiEdit()}
-        onRenderAndDownload={renderAndDownload}
+        onRenderAndDownload={openExportModal}
       />
 
       <section className="workspace">
@@ -2277,6 +2373,16 @@ export default function App() {
         />
       ) : null}
 
+      <ExportModal
+        open={exportModalOpen}
+        state={renderStatus}
+        error={renderError}
+        defaultFileName={defaultExportFileName}
+        canChooseDestination={canChooseExportDestination}
+        onExport={renderAndDownload}
+        onClose={closeExportModal}
+      />
+
       <ProjectSidebar
         open={sidebarOpen}
         projects={projectSummaries}
@@ -2301,7 +2407,7 @@ export default function App() {
         modelOptions={modelOptions}
         selectedModel={selectedModel}
         audioProcessing={audioProcessing}
-        anthropicSettings={anthropicSettings}
+        openRouterSettings={openRouterSettings}
         onSave={saveSettings}
         onClose={closeSettingsModal}
       />

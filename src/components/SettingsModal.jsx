@@ -8,7 +8,7 @@ export function SettingsModal({
   modelOptions,
   selectedModel,
   audioProcessing,
-  anthropicSettings,
+  openRouterSettings,
   onSave,
   onClose,
 }) {
@@ -39,9 +39,9 @@ export function SettingsModal({
   if (!open) return null;
 
   const isSaving = state === "saving";
-  const hasSavedKey = Boolean(anthropicSettings?.configured);
-  const keySource = anthropicSettings?.keySource || "none";
-  const aiEditModel = anthropicSettings?.model || "Default";
+  const hasSavedKey = Boolean(openRouterSettings?.configured);
+  const keySource = openRouterSettings?.keySource || "none";
+  const aiEditModel = openRouterSettings?.model || "Default";
 
   const toggleAudio = (key) => {
     setDraftAudioProcessing((current) => ({
@@ -128,11 +128,11 @@ export function SettingsModal({
           </div>
 
           <label className="settings-field">
-            <span>AI edit API key</span>
+            <span>OpenRouter API key</span>
             <input
               type="password"
               value={apiKey}
-              placeholder={hasSavedKey ? "Key already saved" : "sk-ant-..."}
+              placeholder={hasSavedKey ? "Key already saved" : "sk-or-v1-..."}
               autoComplete="off"
               spellCheck={false}
               disabled={isSaving}
@@ -141,7 +141,9 @@ export function SettingsModal({
           </label>
 
           <div className="settings-summary">
-            <span>{hasSavedKey ? `AI edit key: ${keySource}` : "AI edit key: not saved"}</span>
+            <span>
+              {hasSavedKey ? `OpenRouter key: ${keySource}` : "OpenRouter key: not saved"}
+            </span>
             <span>AI edit model: {aiEditModel}</span>
           </div>
 

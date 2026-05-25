@@ -5,15 +5,16 @@
 AI-native video editing that still runs locally.
 
 Drop in clips, transcribe them with local Whisper models, edit from the words
-instead of the waveform, ask Claude for a first-pass scene edit, then render a
-clean MP4 with FFmpeg.
+instead of the waveform, ask Claude through OpenRouter for a first-pass scene
+edit, then render a clean MP4 with FFmpeg.
 
 ## What It Does
 
 - Local word-level transcription with MLX Whisper.
 - Transcript-first editing: cut or restore words and pauses directly from text.
-- AI edit planning: Claude reads timestamped transcript ranges and proposes a
-  conservative scene sequence made from complete usable takes.
+- AI edit planning: Claude through OpenRouter reads timestamped transcript
+  ranges and proposes a conservative scene sequence made from complete usable
+  takes.
 - Multi-clip sequencing: add clips, make copies from source media, reorder,
   split, trim, and restore timeline sections.
 - Project persistence: autosaved edit projects, project drawer, rename,
@@ -32,17 +33,17 @@ the renderer still uses deterministic source time ranges.
 The AI edit flow:
 
 1. Transcribe one or more clips locally.
-2. Open settings and add an Anthropic API key, or provide one with
-   `ANTHROPIC_API_KEY`.
+2. Open settings and add an OpenRouter API key, or provide one with
+   `OPENROUTER_API_KEY`.
 3. Click `AI edit`.
 4. TidyCut sends the visible transcript ranges, clip labels, trim bounds, and
-   timing metadata to Claude.
+   timing metadata to Claude through OpenRouter.
 5. Claude returns a structured edit plan with selected source ranges, removed
    ranges, confidence, scene type, and review warnings.
 6. TidyCut applies the plan as timeline clips that can still be inspected,
    adjusted, split, reordered, or rendered manually.
 
-Only the AI edit request goes to Anthropic. Uploaded media, generated
+Only the AI edit request goes to OpenRouter. Uploaded media, generated
 transcripts, projects, timeline assets, audio previews, and renders stay on your
 machine.
 
@@ -73,20 +74,25 @@ local server.
 Set environment variables in the shell before starting the app:
 
 ```bash
-ANTHROPIC_API_KEY="sk-ant-..." \
-ANTHROPIC_EDIT_MODEL="claude-opus-4-6" \
+OPENROUTER_API_KEY="sk-or-v1-..." \
+OPENROUTER_EDIT_MODEL="anthropic/claude-opus-4.6" \
 npm run dev
 ```
 
-You can also save the Anthropic key from the in-app settings modal. Saved AI
-settings are written locally to `projects/_settings/anthropic.json`, which is
+You can also save the OpenRouter key from the in-app settings modal. Saved AI
+settings are written locally to `projects/_settings/openrouter.json`, which is
 ignored by git.
+
+The default AI edit model is `anthropic/claude-opus-4.6` via OpenRouter. There
+is no direct Anthropic API configuration path.
 
 Useful environment variables:
 
 ```text
-ANTHROPIC_API_KEY             Optional key for AI edit.
-ANTHROPIC_EDIT_MODEL          Claude model for AI edit. Defaults to claude-opus-4-6.
+OPENROUTER_API_KEY            Optional key for AI edit.
+OPENROUTER_EDIT_MODEL         Claude model for AI edit. Defaults to anthropic/claude-opus-4.6.
+OPENROUTER_API_URL            OpenRouter-compatible chat completions endpoint.
+OPENROUTER_EDIT_MAX_TOKENS    Maximum output tokens for AI edit. Defaults to 6000.
 LOCAL_EDITOR_MODEL            Default MLX Whisper model.
 LOCAL_EDITOR_MODEL_CACHE      Hugging Face / MLX model cache directory.
 LOCAL_EDITOR_PROJECTS         Project, render, settings, and asset storage root.
@@ -99,7 +105,7 @@ The app also exposes these settings in the UI where practical:
 
 - Default transcription model.
 - Denoise and normalize export defaults.
-- Anthropic API key status.
+- OpenRouter API key status.
 - AI edit model currently used by the backend.
 
 ## Transcription Models

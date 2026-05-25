@@ -6,6 +6,7 @@ import {
   buildSequencePlaybackEntries,
   getClipTimeline,
   buildSequenceTranscriptItems,
+  deleteSequenceTranscriptSelection,
   extendSelectedClipEdges,
   getFirstReadyPlaybackEntry,
   getNextReadyPlaybackEntry,
@@ -255,22 +256,13 @@ describe("sequence model", () => {
           sequenceEnd: 0.5,
         },
         {
-          id: "clip-a::a2",
-          sourceId: "a2",
-          clipId: "clip-a",
-          start: 1,
-          end: 2,
-          sequenceStart: 0.5,
-          sequenceEnd: 1.5,
-        },
-        {
           id: "clip-b::b1",
           sourceId: "b1",
           clipId: "clip-b",
           start: 4,
           end: 5,
-          sequenceStart: 1.5,
-          sequenceEnd: 2.5,
+          sequenceStart: 0.5,
+          sequenceEnd: 1.5,
         },
       ]
     );
@@ -295,6 +287,77 @@ describe("sequence model", () => {
     const next = applySequenceTranscriptCut(clips, items, new Set(["clip-a::a1", "clip-b::b1"]));
     assert.deepEqual([...next[0].cut].sort(), ["a1", "a2"]);
     assert.deepEqual([...next[1].cut], ["b1"]);
+  });
+
+  it("deletes transcript selections by trimming and splitting timeline clips", () => {
+    const clip = {
+      id: "clip-delete-middle",
+      projectId: "project-delete-middle",
+      fileName: "delete-middle.mov",
+      duration: 5,
+      trimStart: 0,
+      trimEnd: null,
+      items: [
+        { id: "w1", kind: "word", text: "keep", start: 0, end: 1 },
+        { id: "w2", kind: "word", text: "delete", start: 1, end: 2 },
+        { id: "w3", kind: "word", text: "tail", start: 2, end: 3 },
+      ],
+      cut: new Set(),
+      status: "ready",
+    };
+    const items = buildSequenceTranscriptItems([clip]);
+    const next = deleteSequenceTranscriptSelection(
+      [clip],
+      items,
+      new Set(["clip-delete-middle::w2"]),
+      () => "clip-delete-middle-tail"
+    );
+
+    assert.deepEqual(
+      next.map(({ id, trimStart, trimEnd, cut }) => ({
+        id,
+        trimStart,
+        trimEnd,
+        cut: [...cut],
+      })),
+      [
+        { id: "clip-delete-middle", trimStart: 0, trimEnd: 1, cut: [] },
+        { id: "clip-delete-middle-tail", trimStart: 2, trimEnd: null, cut: [] },
+      ]
+    );
+    assert.deepEqual(buildSequenceRenderClips(next).map((clip) => clip.timeline), [
+      [{ source_start: 0, source_end: 1 }],
+      [{ source_start: 2, source_end: 5 }],
+    ]);
+    assert.equal(getSequencePlainText(next), "keep\n\ntail");
+  });
+
+  it("removes a clip when every visible transcript item is deleted", () => {
+    const clip = {
+      id: "clip-delete-all",
+      projectId: "project-delete-all",
+      fileName: "delete-all.mov",
+      duration: 5,
+      trimStart: 0,
+      trimEnd: null,
+      items: [
+        { id: "w1", kind: "word", text: "only", start: 1, end: 2 },
+        { id: "w2", kind: "word", text: "take", start: 3, end: 4 },
+      ],
+      cut: new Set(),
+      status: "ready",
+    };
+    const items = buildSequenceTranscriptItems([clip]);
+    const next = deleteSequenceTranscriptSelection(
+      [clip],
+      items,
+      new Set(items.map((item) => item.id)),
+      () => "unused"
+    );
+
+    assert.deepEqual(next, []);
+    assert.deepEqual(buildSequencePlaybackEntries(next), []);
+    assert.deepEqual(buildSequenceRenderClips(next), []);
   });
 
   it("splits clips into non-overlapping render ranges", () => {

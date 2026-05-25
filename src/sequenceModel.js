@@ -53,6 +53,9 @@ export function getClipTrimRange(clip) {
 }
 
 export function getClipVisibleDuration(clip) {
+  if (clipStatusReady(clip)) {
+    return getClipTimeline(clip).reduce((total, segment) => total + rangeDuration(segment), 0);
+  }
   const range = getClipTrimRange(clip);
   return Math.max(0, range.end - range.start);
 }
@@ -141,6 +144,15 @@ function keptSegmentsForRange(range, cutRanges) {
   return kept.filter((segment) => segment.source_end > segment.source_start);
 }
 
+function subtractRangesFromSegments(segments, rangesToRemove) {
+  const kept = [];
+  const removals = mergeRanges(rangesToRemove);
+  for (const segment of segments) {
+    kept.push(...keptSegmentsForRange({ start: segment.source_start, end: segment.source_end }, removals));
+  }
+  return kept;
+}
+
 function rangeDuration(range) {
   return Math.max(0, finiteNumber(range.source_end) - finiteNumber(range.source_start));
 }
@@ -194,6 +206,11 @@ function getClipSourceDuration(clip) {
     finiteNumber(clip?.source?.duration, 0) ||
     finiteNumber(clip?.items?.at(-1)?.end, 0);
   return Math.max(range.end, sourceDuration);
+}
+
+function segmentTrimEnd(clip, end) {
+  const sourceDuration = getClipSourceDuration(clip);
+  return Math.abs(end - sourceDuration) <= SKIP_EPSILON ? null : end;
 }
 
 function selectionSet(selection) {
@@ -359,10 +376,6 @@ export function getClipTimeline(clip) {
   return getTrimmedTimeline(clip);
 }
 
-export function getClipCutRanges(clip) {
-  return getCutRanges(clip, getClipTrimRange(clip));
-}
-
 export function getClipDurations(clip) {
   if (hasKnownSourceDuration(clip)) {
     return getTrimmedDurations(clip);
@@ -405,29 +418,62 @@ export function buildSequencePlaybackEntries(clips = []) {
 
   for (const clip of clips) {
     const range = getClipTrimRange(clip);
-    const duration = Math.max(0, range.end - range.start);
-    entries.push({
-      clipId: clip.id,
-      clip,
-      sourceStart: range.start,
-      sourceEnd: range.end,
-      sequenceStart: sequenceCursor,
-      sequenceEnd: sequenceCursor + duration,
-      duration,
-      ready: clipStatusReady(clip) && duration > 0,
-    });
-    sequenceCursor += duration;
+    const ranges = clipStatusReady(clip)
+      ? getClipTimeline(clip)
+      : range.end > range.start
+        ? [rangeToSegment(range.start, range.end)]
+        : [];
+
+    for (const segment of ranges) {
+      const duration = rangeDuration(segment);
+      if (duration <= 0) continue;
+      entries.push({
+        clipId: clip.id,
+        clip,
+        sourceStart: segment.source_start,
+        sourceEnd: segment.source_end,
+        sequenceStart: sequenceCursor,
+        sequenceEnd: sequenceCursor + duration,
+        duration,
+        ready: clipStatusReady(clip) && duration > 0,
+      });
+      sequenceCursor += duration;
+    }
   }
 
   return entries;
 }
 
 export function sourceTimeToSequenceTime(clips = [], clipId, sourceTime = 0) {
-  const entry = buildSequencePlaybackEntries(clips).find((candidate) => candidate.clipId === clipId);
-  if (!entry) return 0;
-  const time = finiteNumber(sourceTime, entry.sourceStart);
-  const clamped = Math.min(Math.max(time, entry.sourceStart), entry.sourceEnd);
-  return entry.sequenceStart + Math.max(0, clamped - entry.sourceStart);
+  const time = finiteNumber(sourceTime, 0);
+  let sequenceCursor = 0;
+
+  for (const clip of clips) {
+    const ranges = clipStatusReady(clip)
+      ? getClipTimeline(clip)
+      : (() => {
+          const range = getClipTrimRange(clip);
+          return range.end > range.start ? [rangeToSegment(range.start, range.end)] : [];
+        })();
+
+    if (clip.id === clipId) {
+      if (!ranges.length) return sequenceCursor;
+
+      for (const segment of ranges) {
+        const duration = rangeDuration(segment);
+        if (duration <= 0) continue;
+        if (time <= segment.source_start) return sequenceCursor;
+        if (time < segment.source_end) return sequenceCursor + (time - segment.source_start);
+        sequenceCursor += duration;
+      }
+
+      return sequenceCursor;
+    }
+
+    sequenceCursor += ranges.reduce((total, segment) => total + rangeDuration(segment), 0);
+  }
+
+  return 0;
 }
 
 export function sequenceTimeToSourceTime(clips = [], sequenceTime = 0) {
@@ -458,10 +504,14 @@ export function sequenceTimeToSourceTime(clips = [], sequenceTime = 0) {
 }
 
 export function getNextReadyPlaybackEntry(clips = [], clipId) {
-  const entries = buildSequencePlaybackEntries(clips);
-  const index = entries.findIndex((entry) => entry.clipId === clipId);
-  if (index < 0) return null;
-  return entries.slice(index + 1).find((entry) => entry.ready) || null;
+  const clipIndex = clips.findIndex((clip) => clip.id === clipId);
+  if (clipIndex < 0) return null;
+  const laterClipIds = new Set(clips.slice(clipIndex + 1).map((clip) => clip.id));
+  return (
+    buildSequencePlaybackEntries(clips).find(
+      (entry) => entry.ready && laterClipIds.has(entry.clipId)
+    ) || null
+  );
 }
 
 export function getFirstReadyPlaybackEntry(clips = []) {
@@ -489,38 +539,44 @@ export function buildSequenceTranscriptItems(clips = []) {
 
   clips.forEach((clip, clipIndex) => {
     const range = getClipTrimRange(clip);
-    const clipDuration = Math.max(0, range.end - range.start);
-    if (!clipStatusReady(clip) || !Array.isArray(clip.items) || clipDuration <= 0) {
-      sequenceCursor += clipDuration;
+    const fallbackSegment = range.end > range.start ? [rangeToSegment(range.start, range.end)] : [];
+    const segments = clipStatusReady(clip) ? getClipTimeline(clip) : fallbackSegment;
+    if (!clipStatusReady(clip) || !Array.isArray(clip.items) || !segments.length) {
+      sequenceCursor += segments.reduce((total, segment) => total + rangeDuration(segment), 0);
       return;
     }
 
     let emittedForClip = 0;
-    for (const item of clip.items) {
-      if (!itemCenterInRange(item, range)) continue;
-      const start = Math.max(finiteNumber(item.start), range.start);
-      const end = Math.min(finiteNumber(item.end), range.end);
-      if (end <= start) continue;
+    for (const segment of segments) {
+      const segmentRange = { start: segment.source_start, end: segment.source_end };
+      const segmentCursor = sequenceCursor;
 
-      sequenceItems.push({
-        ...item,
-        id: sequenceItemId(clip.id, item.id),
-        sourceId: item.id,
-        sourceStart: finiteNumber(item.start),
-        sourceEnd: finiteNumber(item.end),
-        start,
-        end,
-        clipId: clip.id,
-        clipIndex,
-        clipName: clip.fileName || `Clip ${clipIndex + 1}`,
-        sequenceStart: sequenceCursor + (start - range.start),
-        sequenceEnd: sequenceCursor + (end - range.start),
-        isClipStart: emittedForClip === 0,
-      });
-      emittedForClip += 1;
+      for (const item of clip.items) {
+        if (!itemCenterInRange(item, segmentRange)) continue;
+        const start = Math.max(finiteNumber(item.start), segmentRange.start);
+        const end = Math.min(finiteNumber(item.end), segmentRange.end);
+        if (end <= start) continue;
+
+        sequenceItems.push({
+          ...item,
+          id: sequenceItemId(clip.id, item.id),
+          sourceId: item.id,
+          sourceStart: finiteNumber(item.start),
+          sourceEnd: finiteNumber(item.end),
+          start,
+          end,
+          clipId: clip.id,
+          clipIndex,
+          clipName: clip.fileName || `Clip ${clipIndex + 1}`,
+          sequenceStart: segmentCursor + (start - segmentRange.start),
+          sequenceEnd: segmentCursor + (end - segmentRange.start),
+          isClipStart: emittedForClip === 0,
+        });
+        emittedForClip += 1;
+      }
+
+      sequenceCursor += rangeDuration(segment);
     }
-
-    sequenceCursor += clipDuration;
   });
 
   return sequenceItems;
@@ -566,6 +622,85 @@ export function applySequenceTranscriptCut(clips = [], transcriptItems = [], tra
     changed = true;
     return { ...clip, cut: nextCut };
   });
+
+  return changed ? next : clips;
+}
+
+export function deleteSequenceTranscriptSelection(
+  clips = [],
+  transcriptItems = [],
+  selection = new Set(),
+  makeClipId
+) {
+  const selected = selectionSet(selection);
+  if (!selected.size) return clips;
+
+  const selectedByClip = new Map();
+  const visibleByClip = new Map();
+  for (const item of transcriptItems) {
+    if (!item?.clipId || !item?.sourceId) continue;
+    if (!visibleByClip.has(item.clipId)) visibleByClip.set(item.clipId, new Set());
+    visibleByClip.get(item.clipId).add(item.id);
+    if (!selected.has(item.id)) continue;
+    if (!selectedByClip.has(item.clipId)) selectedByClip.set(item.clipId, []);
+    selectedByClip.get(item.clipId).push(item);
+  }
+  if (!selectedByClip.size) return clips;
+
+  let changed = false;
+  const next = [];
+
+  for (const clip of clips) {
+    const selectedItems = selectedByClip.get(clip.id) || [];
+    if (!selectedItems.length || !clipStatusReady(clip)) {
+      next.push(clip);
+      continue;
+    }
+
+    const visibleIds = visibleByClip.get(clip.id) || new Set();
+    const allVisibleSelected =
+      visibleIds.size > 0 && [...visibleIds].every((id) => selected.has(id));
+    const range = getClipTrimRange(clip);
+    const existingSegments = getClipTimeline(clip);
+    const deleteRanges = allVisibleSelected
+      ? [rangeToSegment(range.start, range.end)]
+      : selectedItems
+          .map((item) =>
+            clipSegmentToRange(
+              {
+                source_start: item.sourceStart ?? item.start,
+                source_end: item.sourceEnd ?? item.end,
+              },
+              range
+            )
+          )
+          .filter(Boolean);
+    const keptSegments = subtractRangesFromSegments(existingSegments, deleteRanges);
+
+    if (!keptSegments.length) {
+      changed = true;
+      continue;
+    }
+
+    keptSegments.forEach((segment, segmentIndex) => {
+      const sourceStart = roundSeconds(segment.source_start);
+      const sourceEnd = roundSeconds(segment.source_end);
+      const id =
+        segmentIndex === 0
+          ? clip.id
+          : makeClipId
+            ? makeClipId(clip)
+            : `${clip.id}_cut_${segmentIndex + 1}`;
+      next.push({
+        ...clip,
+        id,
+        trimStart: sourceStart,
+        trimEnd: segmentTrimEnd(clip, sourceEnd),
+        cut: new Set(),
+      });
+    });
+    changed = true;
+  }
 
   return changed ? next : clips;
 }

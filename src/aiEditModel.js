@@ -1,7 +1,7 @@
 import { getClipTrimRange } from "./sequenceModel.js";
 
 export const AI_EDIT_URL = "/api/ai/edit-plan";
-export const ANTHROPIC_SETTINGS_URL = "/api/settings/anthropic";
+export const OPENROUTER_SETTINGS_URL = "/api/settings/openrouter";
 
 function asSet(value) {
   if (value instanceof Set) return value;

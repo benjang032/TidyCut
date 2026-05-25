@@ -15,7 +15,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MEDIA_SOURCE_MIME, TIMELINE_CLIP_MIME } from "../dragTypes";
 import { formatClock } from "../editorModel";
-import { getClipCutRanges, getClipTrimRange, getClipVisibleDuration } from "../sequenceModel";
+import { getClipTrimRange, getClipVisibleDuration } from "../sequenceModel";
 
 const PLACEHOLDER_DURATION_SECONDS = 30;
 const MIN_PIXELS_PER_SECOND = 4;
@@ -740,9 +740,6 @@ function ClipBlock({
         {status === "ready" ? (
           <ClipMedia clip={clip} mediaAsset={mediaAsset} trimStart={trimStart} trimEnd={trimEnd} />
         ) : null}
-        {status === "ready" && trimEnd > trimStart ? (
-          <CutOverlays clip={clip} pps={pps} trimStart={trimStart} trimEnd={trimEnd} />
-        ) : null}
         {status === "transcribing" ? (
           <div className="tl-clip-progress" aria-hidden="true">
             <span />
@@ -832,23 +829,6 @@ function ClipMedia({ clip, mediaAsset, trimStart, trimEnd }) {
       <span />
     </div>
   );
-}
-
-function CutOverlays({ clip, pps, trimStart, trimEnd }) {
-  const overlays = getClipCutRanges(clip)
-    .filter((range) => range.source_end > trimStart && range.source_start < trimEnd)
-    .map((range) => {
-      const start = Math.max(range.source_start, trimStart);
-      const end = Math.min(range.source_end, trimEnd);
-      return (
-        <div
-          key={`${range.source_start}:${range.source_end}`}
-          className="tl-clip-cut"
-          style={{ left: (start - trimStart) * pps, width: Math.max(1, (end - start) * pps) }}
-        />
-      );
-    });
-  return <>{overlays}</>;
 }
 
 function Stat({ label, value, tone }) {

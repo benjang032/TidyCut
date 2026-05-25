@@ -41,10 +41,9 @@ export function TranscriptPane({
             <p className="legend">
               <span className="legend-dot keep" /> kept
               <span className="legend-dot pause" /> pause
-              <span className="legend-dot cut" /> cut
             </p>
             <p className="hint">
-              Click to seek &middot; drag or shift-click to select &middot; <kbd>Del</kbd> to cut
+              Click to seek &middot; drag or shift-click to select &middot; <kbd>Del</kbd> to delete
             </p>
           </div>
 
@@ -203,8 +202,8 @@ function SelectionBar({
           <button
             className="selection-tool selection-tool-cut"
             onClick={onCut}
-            title="Cut selection"
-            aria-label="Cut selection"
+            title="Delete selection"
+            aria-label="Delete selection"
           >
             <Scissors size={15} />
           </button>

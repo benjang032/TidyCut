@@ -328,15 +328,6 @@
   to { background-position: 160px 0, 0 0; }
 }
 
-.tl-clip-cut {
-  background: rgba(255, 91, 98, 0.5);
-  bottom: 0;
-  pointer-events: none;
-  position: absolute;
-  top: 0;
-  z-index: 2;
-}
-
 .tl-clip-progress {
   background: rgba(196, 255, 58, 0.1);
   bottom: 0;

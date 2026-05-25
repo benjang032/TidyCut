@@ -14,20 +14,20 @@ const __dirname = path.dirname(__filename);
 const projectsRoot = process.env.LOCAL_EDITOR_PROJECTS || path.join(__dirname, "projects");
 const editProjectsRoot = path.join(projectsRoot, "_edit-projects");
 const localSettingsRoot = path.join(projectsRoot, "_settings");
-const anthropicSettingsPath = path.join(localSettingsRoot, "anthropic.json");
+const openRouterSettingsPath = path.join(localSettingsRoot, "openrouter.json");
 const modelCache = process.env.LOCAL_EDITOR_MODEL_CACHE || path.join(__dirname, "models", "hf");
 const defaultModel = process.env.LOCAL_EDITOR_MODEL || "mlx-community/whisper-large-v3-turbo";
 const python = process.env.LOCAL_EDITOR_PYTHON || path.join(__dirname, ".venv", "bin", "python");
 const vadEnabled = process.env.LOCAL_EDITOR_VAD !== "0";
-const anthropicApiUrl =
-  process.env.ANTHROPIC_API_URL || "https://api.anthropic.com/v1/messages";
-let anthropicApiKey = process.env.ANTHROPIC_API_KEY || "";
-let anthropicApiKeySource = anthropicApiKey ? "environment" : "none";
-const anthropicEditModel =
-  process.env.ANTHROPIC_EDIT_MODEL || process.env.ANTHROPIC_MODEL || "claude-opus-4-6";
-const anthropicEditMaxTokens = Math.max(
+const openRouterApiUrl =
+  process.env.OPENROUTER_API_URL || "https://openrouter.ai/api/v1/chat/completions";
+let openRouterApiKey = process.env.OPENROUTER_API_KEY || "";
+let openRouterApiKeySource = openRouterApiKey ? "environment" : "none";
+const openRouterEditModel =
+  process.env.OPENROUTER_EDIT_MODEL || "anthropic/claude-opus-4.6";
+const openRouterEditMaxTokens = Math.max(
   1024,
-  Number(process.env.ANTHROPIC_EDIT_MAX_TOKENS) || 6000
+  Number(process.env.OPENROUTER_EDIT_MAX_TOKENS) || 6000
 );
 const aiEditMaxTranscriptItems = Math.max(
   1000,
@@ -69,11 +69,11 @@ await fs.mkdir(uploadsRoot, { recursive: true });
 await fs.mkdir(projectsRoot, { recursive: true });
 await fs.mkdir(editProjectsRoot, { recursive: true });
 await fs.mkdir(modelCache, { recursive: true });
-if (!anthropicApiKey) {
-  const savedAnthropicApiKey = await readSavedAnthropicApiKey();
-  if (savedAnthropicApiKey) {
-    anthropicApiKey = savedAnthropicApiKey;
-    anthropicApiKeySource = "local";
+if (!openRouterApiKey) {
+  const savedOpenRouterApiKey = await readSavedOpenRouterApiKey();
+  if (savedOpenRouterApiKey) {
+    openRouterApiKey = savedOpenRouterApiKey;
+    openRouterApiKeySource = "local";
   }
 }
 
@@ -97,9 +97,9 @@ app.get("/api/health", async (_request, response) => {
     model: defaultModel,
     vad: vadEnabled,
     aiEdit: {
-      available: Boolean(anthropicApiKey),
-      model: anthropicEditModel,
-      keySource: anthropicApiKeySource,
+      available: Boolean(openRouterApiKey),
+      model: openRouterEditModel,
+      keySource: openRouterApiKeySource,
     },
   });
 });
@@ -742,9 +742,9 @@ function cleanTimeline(timeline) {
   });
 }
 
-async function readSavedAnthropicApiKey() {
+async function readSavedOpenRouterApiKey() {
   try {
-    const raw = await fs.readFile(anthropicSettingsPath, "utf8");
+    const raw = await fs.readFile(openRouterSettingsPath, "utf8");
     const settings = JSON.parse(raw);
     return typeof settings?.apiKey === "string" ? settings.apiKey.trim() : "";
   } catch {
@@ -752,25 +752,25 @@ async function readSavedAnthropicApiKey() {
   }
 }
 
-function cleanAnthropicApiKey(value) {
+function cleanOpenRouterApiKey(value) {
   const apiKey = typeof value === "string" ? value.trim() : "";
   if (!apiKey) {
-    throw httpError(400, "Enter your Anthropic API key.", "ANTHROPIC_API_KEY_REQUIRED");
+    throw httpError(400, "Enter your OpenRouter API key.", "OPENROUTER_API_KEY_REQUIRED");
   }
-  if (apiKey.length < 20 || !apiKey.startsWith("sk-ant-")) {
+  if (apiKey.length < 20 || !apiKey.startsWith("sk-or-")) {
     throw httpError(
       400,
-      "That does not look like an Anthropic API key.",
-      "ANTHROPIC_API_KEY_INVALID"
+      "That does not look like an OpenRouter API key.",
+      "OPENROUTER_API_KEY_INVALID"
     );
   }
   return apiKey;
 }
 
-async function saveAnthropicSettings(apiKey) {
+async function saveOpenRouterSettings(apiKey) {
   await fs.mkdir(localSettingsRoot, { recursive: true, mode: 0o700 });
   await fs.writeFile(
-    anthropicSettingsPath,
+    openRouterSettingsPath,
     JSON.stringify(
       {
         apiKey,
@@ -781,28 +781,28 @@ async function saveAnthropicSettings(apiKey) {
     ),
     { encoding: "utf8", mode: 0o600 }
   );
-  await fs.chmod(anthropicSettingsPath, 0o600).catch(() => {});
+  await fs.chmod(openRouterSettingsPath, 0o600).catch(() => {});
 }
 
-function publicAnthropicSettings() {
+function publicOpenRouterSettings() {
   return {
-    configured: Boolean(anthropicApiKey),
-    model: anthropicEditModel,
-    keySource: anthropicApiKeySource,
+    configured: Boolean(openRouterApiKey),
+    model: openRouterEditModel,
+    keySource: openRouterApiKeySource,
   };
 }
 
-app.get("/api/settings/anthropic", async (_request, response) => {
-  response.json(publicAnthropicSettings());
+app.get("/api/settings/openrouter", async (_request, response) => {
+  response.json(publicOpenRouterSettings());
 });
 
-app.put("/api/settings/anthropic", async (request, response) => {
+app.put("/api/settings/openrouter", async (request, response) => {
   try {
-    const apiKey = cleanAnthropicApiKey(request.body?.apiKey);
-    await saveAnthropicSettings(apiKey);
-    anthropicApiKey = apiKey;
-    anthropicApiKeySource = "local";
-    response.json(publicAnthropicSettings());
+    const apiKey = cleanOpenRouterApiKey(request.body?.apiKey);
+    await saveOpenRouterSettings(apiKey);
+    openRouterApiKey = apiKey;
+    openRouterApiKeySource = "local";
+    response.json(publicOpenRouterSettings());
   } catch (error) {
     response.status(error.status || 500).json({
       error: error instanceof Error ? error.message : String(error),
@@ -1025,56 +1025,63 @@ function buildAiEditUserPrompt(request) {
   );
 }
 
-function extractAnthropicJson(payload) {
+function extractOpenRouterJson(payload) {
   const output = payload?.output;
   if (output && typeof output === "object" && !Array.isArray(output)) return output;
 
-  const content = Array.isArray(payload?.content) ? payload.content : [];
-  const text = content
+  const choice = Array.isArray(payload?.choices) ? payload.choices[0] : null;
+  const content = choice?.message?.content;
+  if (content && typeof content === "object" && !Array.isArray(content)) return content;
+
+  const text = (Array.isArray(content) ? content : [{ type: "text", text: content }])
     .map((part) => {
+      if (typeof part === "string") return part;
       if (part?.type === "text" && typeof part.text === "string") return part.text;
       return "";
     })
     .join("")
     .trim();
-  if (!text) throw new Error("Anthropic returned no structured edit plan.");
+  if (!text) throw new Error("OpenRouter returned no structured edit plan.");
   return JSON.parse(text);
 }
 
-async function callAnthropicAiEdit(request) {
-  if (!anthropicApiKey) {
+async function callOpenRouterAiEdit(request) {
+  if (!openRouterApiKey) {
     throw httpError(
       400,
-      "Enter your Anthropic API key to use AI edit.",
-      "ANTHROPIC_API_KEY_MISSING"
+      "Enter your OpenRouter API key to use AI edit.",
+      "OPENROUTER_API_KEY_MISSING"
     );
   }
 
-  const response = await fetch(anthropicApiUrl, {
+  const response = await fetch(openRouterApiUrl, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "x-api-key": anthropicApiKey,
-      "anthropic-version": "2023-06-01",
+      Authorization: `Bearer ${openRouterApiKey}`,
+      "X-Title": "TidyCut",
     },
     body: JSON.stringify({
-      model: anthropicEditModel,
-      max_tokens: anthropicEditMaxTokens,
-      system: aiEditSystemPrompt,
+      model: openRouterEditModel,
+      max_tokens: openRouterEditMaxTokens,
+      provider: {
+        require_parameters: true,
+      },
       messages: [
         {
+          role: "system",
+          content: aiEditSystemPrompt,
+        },
+        {
           role: "user",
-          content: [
-            {
-              type: "text",
-              text: buildAiEditUserPrompt(request),
-            },
-          ],
+          content: buildAiEditUserPrompt(request),
         },
       ],
-      output_config: {
-        format: {
-          type: "json_schema",
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "tidycut_ai_edit_plan",
+          strict: true,
           schema: aiEditPlanSchema,
         },
       },
@@ -1091,11 +1098,11 @@ async function callAnthropicAiEdit(request) {
 
   if (!response.ok) {
     const detail =
-      payload?.error?.message || payload?.error || raw || `Anthropic returned ${response.status}.`;
+      payload?.error?.message || payload?.error || raw || `OpenRouter returned ${response.status}.`;
     throw httpError(response.status >= 500 ? 502 : response.status, String(detail));
   }
 
-  const plan = extractAnthropicJson(payload);
+  const plan = extractOpenRouterJson(payload);
   return {
     plan,
     usage: payload?.usage || null,
@@ -1198,7 +1205,7 @@ function sanitizeAiEditPlan(rawPlan, request) {
 
   return {
     version: "tidycut_ai_edit_v1",
-    model: anthropicEditModel,
+    model: openRouterEditModel,
     editing_mode: cleanText(rawPlan?.editing_mode, request.mode, 120) || request.mode,
     summary: cleanText(rawPlan?.summary, "AI generated a first-pass edit.", 2000),
     timeline,
@@ -1213,10 +1220,10 @@ app.post("/api/ai/edit-plan", async (request, response) => {
   let editRequest;
   try {
     editRequest = cleanAiEditRequest(request.body || {});
-    const { plan: rawPlan, usage } = await callAnthropicAiEdit(editRequest);
+    const { plan: rawPlan, usage } = await callOpenRouterAiEdit(editRequest);
     const plan = sanitizeAiEditPlan(rawPlan, editRequest);
     response.json({
-      model: anthropicEditModel,
+      model: openRouterEditModel,
       itemCount: editRequest.itemCount,
       usage,
       plan,
