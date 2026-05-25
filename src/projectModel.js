@@ -80,6 +80,7 @@ export function normalizeAudioProcessing(options) {
 export function serializeClipForProject(clip, index = 0) {
   const projectId = stringOrNull(clip?.projectId);
   const id = stringOrNull(clip?.id) || `clip_${index}`;
+  const mediaSourceId = stringOrNull(clip?.mediaSourceId);
   const items = Array.isArray(clip?.items) ? clip.items.map(normalizeItem) : [];
   const cut = normalizeCut(clip?.cut);
   const status = RESTORABLE_STATUSES.has(clip?.status) ? clip.status : items.length ? "ready" : "queued";
@@ -88,6 +89,7 @@ export function serializeClipForProject(clip, index = 0) {
 
   return {
     id,
+    mediaSourceId,
     projectId,
     projectDir: stringOrNull(clip?.projectDir),
     videoPath: stringOrNull(clip?.videoPath),
@@ -107,9 +109,55 @@ export function serializeClipForProject(clip, index = 0) {
   };
 }
 
+function mediaSourceKey(clip) {
+  const mediaSourceId = stringOrNull(clip?.mediaSourceId);
+  if (mediaSourceId) return `source:${mediaSourceId}`;
+  const projectId = stringOrNull(clip?.projectId);
+  if (projectId) return `project:${projectId}`;
+  const videoPath = stringOrNull(clip?.videoPath);
+  if (videoPath) return `path:${videoPath}`;
+  const videoUrl = stringOrNull(clip?.videoUrl);
+  if (videoUrl) return `url:${videoUrl}`;
+  return `clip:${stringOrNull(clip?.id) || "unknown"}`;
+}
+
+function normalizeMediaSourceForProject(clip, index = 0) {
+  const id = stringOrNull(clip?.mediaSourceId) || stringOrNull(clip?.id) || `source_${index}`;
+  return {
+    ...serializeClipForProject(
+      {
+        ...clip,
+        id,
+        mediaSourceId: id,
+        trimStart: 0,
+        trimEnd: null,
+        cut: [],
+      },
+      index
+    ),
+    id,
+    mediaSourceId: id,
+    trimStart: 0,
+    trimEnd: null,
+    cut: [],
+  };
+}
+
+function buildSerializedMediaSources(clips = []) {
+  const byKey = new Map();
+  clips.forEach((clip, index) => {
+    const key = mediaSourceKey(clip);
+    if (!byKey.has(key)) {
+      byKey.set(key, normalizeMediaSourceForProject(clip, index));
+    }
+  });
+  return [...byKey.values()];
+}
+
 export function serializeProjectDocument({
   project,
   clips,
+  mediaSources,
   activeClipId,
   selectedModel,
   audioProcessing,
@@ -118,6 +166,10 @@ export function serializeProjectDocument({
   const serializedClips = Array.isArray(clips)
     ? clips.map((clip, index) => serializeClipForProject(clip, index))
     : [];
+  const serializedMediaSources =
+    Array.isArray(mediaSources) && mediaSources.length > 0
+      ? buildSerializedMediaSources(mediaSources)
+      : buildSerializedMediaSources(serializedClips);
   const activeId =
     stringOrNull(activeClipId) && serializedClips.some((clip) => clip.id === activeClipId)
       ? activeClipId
@@ -132,6 +184,7 @@ export function serializeProjectDocument({
     activeClipId: activeId,
     selectedModel: stringOrNull(selectedModel),
     audioProcessing: normalizeAudioProcessing(audioProcessing),
+    mediaSources: serializedMediaSources,
     clips: serializedClips,
   };
 }
@@ -171,12 +224,73 @@ export function hydrateClipFromProject(rawClip, index = 0) {
   };
 }
 
+function normalizeHydratedMediaSource(clip, index = 0) {
+  const id = stringOrNull(clip?.mediaSourceId) || stringOrNull(clip?.id) || `source_${index}`;
+  return {
+    ...clip,
+    id,
+    mediaSourceId: id,
+    trimStart: 0,
+    trimEnd: null,
+    cut: new Set(),
+    aiEdit: undefined,
+  };
+}
+
+function buildHydratedMediaSources(clips = []) {
+  const byKey = new Map();
+  clips.forEach((clip, index) => {
+    const key = mediaSourceKey(clip);
+    if (!byKey.has(key)) {
+      byKey.set(key, normalizeHydratedMediaSource(clip, index));
+    }
+  });
+  return [...byKey.values()];
+}
+
+function findMediaSourceForClip(clip, mediaSources = []) {
+  const mediaSourceId = stringOrNull(clip?.mediaSourceId);
+  if (mediaSourceId) {
+    const byId = mediaSources.find((source) => source.id === mediaSourceId);
+    if (byId) return byId;
+  }
+  const projectId = stringOrNull(clip?.projectId);
+  if (projectId) {
+    const byProject = mediaSources.find((source) => source.projectId === projectId);
+    if (byProject) return byProject;
+  }
+  const videoPath = stringOrNull(clip?.videoPath);
+  if (videoPath) {
+    const byPath = mediaSources.find((source) => source.videoPath === videoPath);
+    if (byPath) return byPath;
+  }
+  const videoUrl = stringOrNull(clip?.videoUrl);
+  if (videoUrl) {
+    const byUrl = mediaSources.find((source) => source.videoUrl === videoUrl);
+    if (byUrl) return byUrl;
+  }
+  return mediaSources.find((source) => source.id === clip?.id) || null;
+}
+
 export function hydrateProjectDocument(rawDocument) {
   const now = Date.now();
   const id = stringOrNull(rawDocument?.id);
-  const clips = Array.isArray(rawDocument?.clips)
+  const hydratedClips = Array.isArray(rawDocument?.clips)
     ? rawDocument.clips.map((clip, index) => hydrateClipFromProject(clip, index))
     : [];
+  const persistedSources = Array.isArray(rawDocument?.mediaSources)
+    ? rawDocument.mediaSources
+        .map((clip, index) => hydrateClipFromProject(clip, index))
+        .map(normalizeHydratedMediaSource)
+    : [];
+  const mediaSources = persistedSources.length
+    ? persistedSources
+    : buildHydratedMediaSources(hydratedClips);
+  const clips = hydratedClips.map((clip) => {
+    if (clip.mediaSourceId) return clip;
+    const source = findMediaSourceForClip(clip, mediaSources);
+    return source ? { ...clip, mediaSourceId: source.id } : clip;
+  });
   const activeClipId =
     stringOrNull(rawDocument?.activeClipId) &&
     clips.some((clip) => clip.id === rawDocument.activeClipId)
@@ -191,6 +305,7 @@ export function hydrateProjectDocument(rawDocument) {
       updatedAt: finiteNumber(rawDocument?.updatedAt, now),
     },
     clips,
+    mediaSources,
     activeClipId,
     selectedModel: stringOrNull(rawDocument?.selectedModel),
     audioProcessing: normalizeAudioProcessing(rawDocument?.audioProcessing),

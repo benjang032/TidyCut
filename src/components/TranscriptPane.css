@@ -222,7 +222,6 @@
 
 .progress-meter {
   background: var(--surface-2);
-  border: 1px solid var(--hairline);
   border-radius: 999px;
   height: 8px;
   overflow: hidden;
@@ -266,14 +265,15 @@
 .selection-bar {
   align-items: center;
   background: rgba(20, 23, 29, 0.94);
-  border: 1px solid var(--hairline-strong);
   border-radius: 10px;
   bottom: 16px;
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
   display: flex;
   gap: 12px;
   justify-content: space-between;
   left: 50%;
+  max-width: min(560px, calc(100% - 24px));
+  min-width: min(440px, calc(100% - 24px));
   padding: 6px 8px 6px 12px;
   position: absolute;
   transform: translateX(-50%);
@@ -303,12 +303,49 @@
 .selection-label {
   color: var(--text-muted);
   font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .selection-actions {
   align-items: center;
   display: flex;
   gap: 4px;
+  flex-shrink: 0;
+}
+
+.selection-tool {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text-muted);
+  display: inline-flex;
+  height: 30px;
+  justify-content: center;
+  padding: 0;
+  transition: background 0.14s ease, color 0.14s ease, transform 0.05s ease;
+  width: 30px;
+}
+
+.selection-tool:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.selection-tool:active:not(:disabled) {
+  transform: translateY(0.5px);
+}
+
+.selection-tool-cut {
+  background: var(--cut-soft);
+  color: var(--danger);
+}
+
+.selection-tool-cut:hover:not(:disabled) {
+  background: rgba(255, 91, 98, 0.22);
+  color: var(--danger);
 }
 
 .spin {

@@ -13,10 +13,10 @@ import {
   ZoomOut,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { MEDIA_SOURCE_MIME, TIMELINE_CLIP_MIME } from "../dragTypes";
 import { formatClock } from "../editorModel";
 import { getClipCutRanges, getClipTrimRange, getClipVisibleDuration } from "../sequenceModel";
 
-const CLIP_MIME = "application/x-local-editor-clip";
 const PLACEHOLDER_DURATION_SECONDS = 30;
 const MIN_PIXELS_PER_SECOND = 4;
 const MAX_PIXELS_PER_SECOND = 80;
@@ -41,7 +41,16 @@ function dragHasClip(event) {
   const types = event.dataTransfer?.types;
   if (!types) return false;
   for (let i = 0; i < types.length; i++) {
-    if (types[i] === CLIP_MIME) return true;
+    if (types[i] === TIMELINE_CLIP_MIME) return true;
+  }
+  return false;
+}
+
+function dragHasMediaSource(event) {
+  const types = event.dataTransfer?.types;
+  if (!types) return false;
+  for (let i = 0; i < types.length; i++) {
+    if (types[i] === MEDIA_SOURCE_MIME) return true;
   }
   return false;
 }
@@ -172,10 +181,14 @@ export function Timeline({
   videoTime,
   sequenceTime,
   isPlaying,
+  hasTranscript,
+  durations,
+  sourceDuration,
   onChooseVideo,
   onFilesSelected,
   onReferencePath,
   onSelectClip,
+  onAddClipCopy,
   onReorderClip,
   onRemoveClip,
   onRetryClip,
@@ -346,6 +359,22 @@ export function Timeline({
     [onSeekToSequenceTime, pps, snapSequenceX, totalDuration, totalWidth]
   );
 
+  const getDropPlacement = useCallback(
+    (clientX) => {
+      if (!blocks.length) return { targetId: null, side: "after" };
+      const scroll = trackRef.current;
+      if (!scroll) return { targetId: blocks.at(-1)?.clipId || null, side: "after" };
+      const rect = scroll.getBoundingClientRect();
+      const x = clientX - rect.left + scroll.scrollLeft;
+      for (const block of blocks) {
+        if (x < block.x + block.width / 2) return { targetId: block.clipId, side: "before" };
+        if (x <= block.x + block.width) return { targetId: block.clipId, side: "after" };
+      }
+      return { targetId: blocks.at(-1)?.clipId || null, side: "after" };
+    },
+    [blocks]
+  );
+
   const startTimelineScrub = useCallback(
     (event, snapKey = "ruler") => {
       if (event.button !== 0) return;
@@ -380,24 +409,37 @@ export function Timeline({
     [startTimelineScrub]
   );
 
-  // File drag-and-drop on the strip.
+  // File and source drag-and-drop on the strip.
   const onDragEnter = useCallback((event) => {
-    if (!dragHasVideoFiles(event)) return;
+    if (!dragHasVideoFiles(event) && !dragHasMediaSource(event)) return;
     event.preventDefault();
     fileDragDepthRef.current += 1;
     setIsFileDrag(true);
   }, []);
   const onDragOver = useCallback((event) => {
-    if (!dragHasVideoFiles(event)) return;
+    if (!dragHasVideoFiles(event) && !dragHasMediaSource(event)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
   }, []);
   const onDragLeave = useCallback(() => {
     fileDragDepthRef.current = Math.max(0, fileDragDepthRef.current - 1);
-    if (fileDragDepthRef.current === 0) setIsFileDrag(false);
+    if (fileDragDepthRef.current === 0) {
+      setIsFileDrag(false);
+      setDragInfo(null);
+    }
   }, []);
   const onDrop = useCallback(
     (event) => {
+      if (dragHasMediaSource(event)) {
+        event.preventDefault();
+        fileDragDepthRef.current = 0;
+        setIsFileDrag(false);
+        setDragInfo(null);
+        const sourceId = event.dataTransfer.getData(MEDIA_SOURCE_MIME);
+        const placement = getDropPlacement(event.clientX);
+        if (sourceId) onAddClipCopy?.(sourceId, placement.targetId, placement.side);
+        return;
+      }
       if (dragHasClip(event)) return;
       event.preventDefault();
       fileDragDepthRef.current = 0;
@@ -409,40 +451,56 @@ export function Timeline({
       );
       if (files.length) onFilesSelected(files);
     },
-    [onFilesSelected]
+    [getDropPlacement, onAddClipCopy, onFilesSelected]
   );
 
   // Clip reorder via internal drag.
   const onClipDragStart = useCallback((event, clipId) => {
-    event.dataTransfer.setData(CLIP_MIME, clipId);
+    event.dataTransfer.setData(TIMELINE_CLIP_MIME, clipId);
     event.dataTransfer.effectAllowed = "move";
-    setDragInfo({ srcId: clipId, overId: null, side: null });
+    setDragInfo({ mode: "move", srcId: clipId, overId: null, side: null });
   }, []);
   const onClipDragOver = useCallback((event, clipId) => {
-    if (!dragHasClip(event)) return;
+    const isMediaSource = dragHasMediaSource(event);
+    if (!dragHasClip(event) && !isMediaSource) return;
     event.preventDefault();
     event.stopPropagation();
-    event.dataTransfer.dropEffect = "move";
+    event.dataTransfer.dropEffect = isMediaSource ? "copy" : "move";
     const rect = event.currentTarget.getBoundingClientRect();
     const x = event.clientX - rect.left;
     const side = x < rect.width / 2 ? "before" : "after";
+    const mode = isMediaSource ? "copy" : "move";
     setDragInfo((prev) =>
-      prev && (prev.overId !== clipId || prev.side !== side)
-        ? { ...prev, overId: clipId, side }
+      !prev || prev.overId !== clipId || prev.side !== side || prev.mode !== mode
+        ? {
+            mode,
+            srcId: isMediaSource
+              ? event.dataTransfer.getData(MEDIA_SOURCE_MIME)
+              : event.dataTransfer.getData(TIMELINE_CLIP_MIME),
+            overId: clipId,
+            side,
+          }
         : prev
     );
   }, []);
   const onClipDrop = useCallback(
     (event, targetId) => {
-      if (!dragHasClip(event)) return;
+      const isMediaSource = dragHasMediaSource(event);
+      if (!dragHasClip(event) && !isMediaSource) return;
       event.preventDefault();
       event.stopPropagation();
-      const srcId = event.dataTransfer.getData(CLIP_MIME);
+      const srcId = event.dataTransfer.getData(
+        isMediaSource ? MEDIA_SOURCE_MIME : TIMELINE_CLIP_MIME
+      );
       const side = dragInfo?.side || "before";
       setDragInfo(null);
+      if (isMediaSource) {
+        if (srcId) onAddClipCopy?.(srcId, targetId, side);
+        return;
+      }
       if (srcId && srcId !== targetId) onReorderClip(srcId, targetId, side);
     },
-    [dragInfo, onReorderClip]
+    [dragInfo, onAddClipCopy, onReorderClip]
   );
   const onClipDragEnd = useCallback(() => setDragInfo(null), []);
 
@@ -481,6 +539,17 @@ export function Timeline({
           <Film size={15} />
           <span>Sequence</span>
           <strong>{clips.length}</strong>
+        </div>
+        <div className="timeline-stats">
+          {hasTranscript && durations ? (
+            <>
+              <Stat label="Original" value={formatClock(durations.total)} />
+              <Stat label="Cut" value={formatClock(durations.cut)} tone="cut" />
+              <Stat label="Final" value={formatClock(durations.kept)} tone="keep" />
+            </>
+          ) : sourceDuration > 0 ? (
+            <Stat label="Video" value={formatClock(sourceDuration)} />
+          ) : null}
         </div>
         <div className="timeline-tools">
           <button
@@ -559,7 +628,7 @@ export function Timeline({
                     pps={pps}
                     mediaAsset={assetsByProject[clip.projectId]}
                     isActive={clip.id === activeClipId}
-                    isDragging={dragInfo?.srcId === clip.id}
+                    isDragging={dragInfo?.mode === "move" && dragInfo?.srcId === clip.id}
                     dropSide={dragInfo?.overId === clip.id ? dragInfo.side : null}
                     onClick={() => onSelectClip(clip.id)}
                     onRemove={() => onRemoveClip(clip.id)}
@@ -780,6 +849,15 @@ function CutOverlays({ clip, pps, trimStart, trimEnd }) {
       );
     });
   return <>{overlays}</>;
+}
+
+function Stat({ label, value, tone }) {
+  return (
+    <div className={`stat${tone ? ` stat-${tone}` : ""}`}>
+      <span className="stat-label">{label}</span>
+      <span className="stat-value">{value}</span>
+    </div>
+  );
 }
 
 function EmptyDropzone({ onChooseVideo, onReferencePath }) {

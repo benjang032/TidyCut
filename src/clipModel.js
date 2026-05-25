@@ -99,8 +99,10 @@ export function buildClipFromTranscript({ projectId, projectDir, videoPath, mode
 }
 
 export function makeUploadClip(file) {
+  const id = makeClipId("upload");
   return {
-    id: makeClipId("upload"),
+    id,
+    mediaSourceId: id,
     projectId: null,
     projectDir: null,
     videoPath: null,
@@ -122,8 +124,10 @@ export function makeUploadClip(file) {
 }
 
 export function makeReferencedClip(reference) {
+  const id = makeClipId(reference.projectId);
   return {
-    id: makeClipId(reference.projectId),
+    id,
+    mediaSourceId: id,
     projectId: reference.projectId,
     projectDir: reference.projectDir,
     videoPath: reference.videoPath,

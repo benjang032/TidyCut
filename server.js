@@ -13,16 +13,33 @@ const __dirname = path.dirname(__filename);
 
 const projectsRoot = process.env.LOCAL_EDITOR_PROJECTS || path.join(__dirname, "projects");
 const editProjectsRoot = path.join(projectsRoot, "_edit-projects");
+const localSettingsRoot = path.join(projectsRoot, "_settings");
+const anthropicSettingsPath = path.join(localSettingsRoot, "anthropic.json");
 const modelCache = process.env.LOCAL_EDITOR_MODEL_CACHE || path.join(__dirname, "models", "hf");
 const defaultModel = process.env.LOCAL_EDITOR_MODEL || "mlx-community/whisper-large-v3-turbo";
 const python = process.env.LOCAL_EDITOR_PYTHON || path.join(__dirname, ".venv", "bin", "python");
 const vadEnabled = process.env.LOCAL_EDITOR_VAD !== "0";
+const anthropicApiUrl =
+  process.env.ANTHROPIC_API_URL || "https://api.anthropic.com/v1/messages";
+let anthropicApiKey = process.env.ANTHROPIC_API_KEY || "";
+let anthropicApiKeySource = anthropicApiKey ? "environment" : "none";
+const anthropicEditModel =
+  process.env.ANTHROPIC_EDIT_MODEL || process.env.ANTHROPIC_MODEL || "claude-opus-4-6";
+const anthropicEditMaxTokens = Math.max(
+  1024,
+  Number(process.env.ANTHROPIC_EDIT_MAX_TOKENS) || 6000
+);
+const aiEditMaxTranscriptItems = Math.max(
+  1000,
+  Number(process.env.LOCAL_EDITOR_AI_EDIT_MAX_ITEMS) || 12000
+);
 const uploadsRoot = path.join(__dirname, "uploads");
 const serveStatic = process.env.LOCAL_EDITOR_SERVE_STATIC === "1";
 const distRoot = path.join(__dirname, "dist");
 const videoFilePattern = /\.(avi|m4v|mkv|mov|mp4|webm)$/i;
 const timelineAssetDirName = "timeline-assets";
-const timelineThumbCount = 14;
+const timelineAssetVersion = 2;
+const timelineThumbIntervalSeconds = 3;
 const timelineThumbWidth = 160;
 const timelineThumbHeight = 90;
 const waveformPeakCount = 1600;
@@ -52,6 +69,13 @@ await fs.mkdir(uploadsRoot, { recursive: true });
 await fs.mkdir(projectsRoot, { recursive: true });
 await fs.mkdir(editProjectsRoot, { recursive: true });
 await fs.mkdir(modelCache, { recursive: true });
+if (!anthropicApiKey) {
+  const savedAnthropicApiKey = await readSavedAnthropicApiKey();
+  if (savedAnthropicApiKey) {
+    anthropicApiKey = savedAnthropicApiKey;
+    anthropicApiKeySource = "local";
+  }
+}
 
 const app = express();
 const upload = multer({
@@ -72,6 +96,11 @@ app.get("/api/health", async (_request, response) => {
     denoiseRuntimeDir,
     model: defaultModel,
     vad: vadEnabled,
+    aiEdit: {
+      available: Boolean(anthropicApiKey),
+      model: anthropicEditModel,
+      keySource: anthropicApiKeySource,
+    },
   });
 });
 
@@ -493,6 +522,7 @@ function cleanEditProjectClip(clip, index) {
 
   return {
     id: cleanText(clip?.id, `clip_${index}`, 160),
+    mediaSourceId: cleanText(clip?.mediaSourceId, null, 160),
     projectId,
     projectDir: cleanText(clip?.projectDir, null, 2000),
     videoPath: cleanText(clip?.videoPath, null, 2000),
@@ -519,6 +549,9 @@ function cleanEditProjectDocument(raw, options = {}) {
   const clips = Array.isArray(raw?.clips)
     ? raw.clips.slice(0, 500).map((clip, index) => cleanEditProjectClip(clip, index))
     : [];
+  const mediaSources = Array.isArray(raw?.mediaSources)
+    ? raw.mediaSources.slice(0, 500).map((clip, index) => cleanEditProjectClip(clip, index))
+    : [];
   const activeClipId = cleanText(raw?.activeClipId, null, 160);
 
   return {
@@ -530,6 +563,7 @@ function cleanEditProjectDocument(raw, options = {}) {
     activeClipId: clips.some((clip) => clip.id === activeClipId) ? activeClipId : clips[0]?.id || null,
     selectedModel: cleanText(raw?.selectedModel, defaultModel, 260),
     audioProcessing: cleanAudioProcessing(raw?.audioProcessing),
+    mediaSources,
     clips,
   };
 }
@@ -558,7 +592,10 @@ function editClipVisibleDuration(clip) {
 
 function summarizeEditProject(project) {
   const clips = Array.isArray(project?.clips) ? project.clips : [];
-  const fileNames = [...new Set(clips.map((clip) => clip.fileName).filter(Boolean))].slice(0, 4);
+  const mediaSources = Array.isArray(project?.mediaSources) ? project.mediaSources : [];
+  const fileNames = [
+    ...new Set([...mediaSources, ...clips].map((clip) => clip.fileName).filter(Boolean)),
+  ].slice(0, 4);
   const wordCount = clips.reduce((total, clip) => {
     const cut = new Set(Array.isArray(clip.cut) ? clip.cut : []);
     return (
@@ -705,6 +742,493 @@ function cleanTimeline(timeline) {
   });
 }
 
+async function readSavedAnthropicApiKey() {
+  try {
+    const raw = await fs.readFile(anthropicSettingsPath, "utf8");
+    const settings = JSON.parse(raw);
+    return typeof settings?.apiKey === "string" ? settings.apiKey.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+function cleanAnthropicApiKey(value) {
+  const apiKey = typeof value === "string" ? value.trim() : "";
+  if (!apiKey) {
+    throw httpError(400, "Enter your Anthropic API key.", "ANTHROPIC_API_KEY_REQUIRED");
+  }
+  if (apiKey.length < 20 || !apiKey.startsWith("sk-ant-")) {
+    throw httpError(
+      400,
+      "That does not look like an Anthropic API key.",
+      "ANTHROPIC_API_KEY_INVALID"
+    );
+  }
+  return apiKey;
+}
+
+async function saveAnthropicSettings(apiKey) {
+  await fs.mkdir(localSettingsRoot, { recursive: true, mode: 0o700 });
+  await fs.writeFile(
+    anthropicSettingsPath,
+    JSON.stringify(
+      {
+        apiKey,
+        updatedAt: new Date().toISOString(),
+      },
+      null,
+      2
+    ),
+    { encoding: "utf8", mode: 0o600 }
+  );
+  await fs.chmod(anthropicSettingsPath, 0o600).catch(() => {});
+}
+
+function publicAnthropicSettings() {
+  return {
+    configured: Boolean(anthropicApiKey),
+    model: anthropicEditModel,
+    keySource: anthropicApiKeySource,
+  };
+}
+
+app.get("/api/settings/anthropic", async (_request, response) => {
+  response.json(publicAnthropicSettings());
+});
+
+app.put("/api/settings/anthropic", async (request, response) => {
+  try {
+    const apiKey = cleanAnthropicApiKey(request.body?.apiKey);
+    await saveAnthropicSettings(apiKey);
+    anthropicApiKey = apiKey;
+    anthropicApiKeySource = "local";
+    response.json(publicAnthropicSettings());
+  } catch (error) {
+    response.status(error.status || 500).json({
+      error: error instanceof Error ? error.message : String(error),
+      code: error.code || null,
+    });
+  }
+});
+
+const aiEditPlanSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["version", "editing_mode", "summary", "timeline", "removed", "warnings"],
+  properties: {
+    version: {
+      type: "string",
+      enum: ["tidycut_ai_edit_v1"],
+    },
+    editing_mode: {
+      type: "string",
+      description: "Short name for the requested editing mode.",
+    },
+    summary: {
+      type: "string",
+      description: "One or two sentences explaining the edit strategy.",
+    },
+    timeline: {
+      type: "array",
+      description: "Final edited sequence. Each entry is one continuous video scene.",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "edit_id",
+          "source_clip_id",
+          "source_start",
+          "source_end",
+          "text",
+          "scene_type",
+          "can_stand_alone",
+          "reason",
+          "confidence",
+        ],
+        properties: {
+          edit_id: { type: "string" },
+          source_clip_id: { type: "string" },
+          source_start: { type: "number" },
+          source_end: { type: "number" },
+          text: {
+            type: "string",
+            description: "Approximate spoken text in the selected continuous scene.",
+          },
+          scene_type: {
+            type: "string",
+            enum: ["complete_take", "intro", "main_point", "transition", "outro", "context"],
+          },
+          can_stand_alone: {
+            type: "boolean",
+            description: "True only when the selected range works as a continuous video take.",
+          },
+          reason: { type: "string" },
+          confidence: { type: "number" },
+        },
+      },
+    },
+    removed: {
+      type: "array",
+      description: "Source ranges intentionally left out of the final edit.",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["source_clip_id", "source_start", "source_end", "reason"],
+        properties: {
+          source_clip_id: { type: "string" },
+          source_start: { type: "number" },
+          source_end: { type: "number" },
+          reason: { type: "string" },
+        },
+      },
+    },
+    warnings: {
+      type: "array",
+      description: "Anything a human editor should review before rendering.",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["source_clip_id", "source_start", "source_end", "severity", "message"],
+        properties: {
+          source_clip_id: { type: "string" },
+          source_start: { type: "number" },
+          source_end: { type: "number" },
+          severity: { type: "string", enum: ["info", "review", "risk"] },
+          message: { type: "string" },
+        },
+      },
+    },
+  },
+};
+
+const aiEditSystemPrompt = [
+  "You are a senior talking-head video editor.",
+  "You receive transcript items with timestamps from raw footage of someone trying to record a coherent video.",
+  "The speaker may pause, restart, repeat the same idea, correct themselves, or do multiple takes.",
+  "Infer coherent takes/scenes directly from the transcript and timing data.",
+  "Treat every selected range as a continuous video scene, not as editable prose.",
+  "Do not assemble a better sentence by combining individual words, clauses, or half-sentences from different takes.",
+  "A selected scene is valid only if the spoken content and visual performance can plausibly work as one continuous clip.",
+  "Prefer complete takes and clean sentence or paragraph boundaries over transcript-perfect micro-edits.",
+  "Keep the original order unless there is a strong coherence or storytelling reason to reorder whole scenes.",
+  "If a choice is uncertain, keep the more coherent complete scene and add a warning.",
+  "There is no B-roll, so avoid cuts that require visual coverage.",
+  "Use source_clip_id values exactly as provided.",
+].join("\n");
+
+function roundSeconds(value) {
+  return Number(Number(value).toFixed(3));
+}
+
+function clampNumber(value, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return Math.min(Math.max(number, min), max);
+}
+
+function cleanAiTranscriptItem(item, index, range) {
+  const start = clampNumber(item?.start, range.start, range.end);
+  const end = clampNumber(item?.end, range.start, range.end);
+  if (start == null || end == null || end <= start) return null;
+  const kind = item?.kind === "gap" ? "gap" : "word";
+  const duration = roundSeconds(end - start);
+  return {
+    id: cleanText(item?.id, `${kind}_${index}`, 120),
+    kind,
+    start: roundSeconds(start),
+    end: roundSeconds(end),
+    duration,
+    text:
+      kind === "gap"
+        ? cleanText(item?.text, `[pause ${duration.toFixed(1)}s]`, 80)
+        : cleanText(item?.text, "", 300) || "",
+  };
+}
+
+function cleanAiEditRequestClip(clip, index) {
+  const duration = Math.max(0, finiteNumber(clip?.duration));
+  const trimStart = Math.max(0, finiteNumber(clip?.trim_start ?? clip?.trimStart));
+  const trimEndRaw = finiteNumberOrNull(clip?.trim_end ?? clip?.trimEnd);
+  const fallbackEnd = duration > 0 ? duration : Math.max(trimStart, finiteNumber(clip?.end));
+  const trimEnd = trimEndRaw == null ? fallbackEnd : Math.max(0, trimEndRaw);
+  const range = {
+    start: roundSeconds(Math.min(trimStart, trimEnd)),
+    end: roundSeconds(Math.max(trimStart, trimEnd)),
+  };
+  if (range.end <= range.start) {
+    throw httpError(400, "AI edit clips must have a positive visible duration.");
+  }
+
+  const rawItems = Array.isArray(clip?.transcript_items)
+    ? clip.transcript_items
+    : Array.isArray(clip?.items)
+      ? clip.items
+      : [];
+  const transcriptItems = rawItems
+    .map((item, itemIndex) => cleanAiTranscriptItem(item, itemIndex, range))
+    .filter(Boolean);
+
+  if (!transcriptItems.some((item) => item.kind === "word")) {
+    throw httpError(400, "AI edit needs word-level transcript items.");
+  }
+
+  return {
+    clip_id: cleanText(clip?.clip_id ?? clip?.id, `clip_${index + 1}`, 160),
+    label: cleanText(clip?.label ?? clip?.fileName, `Clip ${index + 1}`, 240),
+    duration: roundSeconds(duration || range.end),
+    visible_start: range.start,
+    visible_end: range.end,
+    transcript_items: transcriptItems,
+  };
+}
+
+function cleanAiEditRequest(body) {
+  const rawClips = Array.isArray(body?.clips) ? body.clips : [];
+  if (!rawClips.length) throw httpError(400, "AI edit needs at least one transcribed clip.");
+
+  const clips = rawClips.slice(0, 50).map(cleanAiEditRequestClip);
+  const itemCount = clips.reduce((total, clip) => total + clip.transcript_items.length, 0);
+  if (itemCount > aiEditMaxTranscriptItems) {
+    throw httpError(
+      413,
+      `AI edit transcript is too large (${itemCount} items). Limit is ${aiEditMaxTranscriptItems}.`
+    );
+  }
+
+  return {
+    mode: cleanText(body?.mode, "coherence_story_v1", 80),
+    instructions: cleanText(body?.instructions, "", 2000) || "",
+    clips,
+    itemCount,
+  };
+}
+
+function buildAiEditUserPrompt(request) {
+  return JSON.stringify(
+    {
+      task:
+        "Create a first-pass coherence/storytelling edit plan. Remove failed attempts, repeated weaker takes, long dead air, and redundant material. Preserve whole usable video scenes.",
+      editing_rules: [
+        "You may decide the take/scene boundaries yourself.",
+        "Every timeline item must be one continuous source range from one source clip.",
+        "Do not splice individual words or partial clauses across different takes.",
+        "Only cut inside a sentence when the selected range still feels like a complete video scene.",
+        "Prefer a slightly longer coherent take over a jumpy transcript-perfect edit.",
+        "Use warnings for uncertain repeated takes, factual differences, or rough boundaries.",
+      ],
+      mode: request.mode,
+      user_instructions: request.instructions,
+      clips: request.clips,
+    },
+    null,
+    2
+  );
+}
+
+function extractAnthropicJson(payload) {
+  const output = payload?.output;
+  if (output && typeof output === "object" && !Array.isArray(output)) return output;
+
+  const content = Array.isArray(payload?.content) ? payload.content : [];
+  const text = content
+    .map((part) => {
+      if (part?.type === "text" && typeof part.text === "string") return part.text;
+      return "";
+    })
+    .join("")
+    .trim();
+  if (!text) throw new Error("Anthropic returned no structured edit plan.");
+  return JSON.parse(text);
+}
+
+async function callAnthropicAiEdit(request) {
+  if (!anthropicApiKey) {
+    throw httpError(
+      400,
+      "Enter your Anthropic API key to use AI edit.",
+      "ANTHROPIC_API_KEY_MISSING"
+    );
+  }
+
+  const response = await fetch(anthropicApiUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": anthropicApiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: anthropicEditModel,
+      max_tokens: anthropicEditMaxTokens,
+      system: aiEditSystemPrompt,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: buildAiEditUserPrompt(request),
+            },
+          ],
+        },
+      ],
+      output_config: {
+        format: {
+          type: "json_schema",
+          schema: aiEditPlanSchema,
+        },
+      },
+    }),
+  });
+
+  let payload = null;
+  const raw = await response.text();
+  try {
+    payload = raw ? JSON.parse(raw) : null;
+  } catch {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    const detail =
+      payload?.error?.message || payload?.error || raw || `Anthropic returned ${response.status}.`;
+    throw httpError(response.status >= 500 ? 502 : response.status, String(detail));
+  }
+
+  const plan = extractAnthropicJson(payload);
+  return {
+    plan,
+    usage: payload?.usage || null,
+  };
+}
+
+function aiClipRangeMap(clips) {
+  return new Map(
+    clips.map((clip) => [
+      clip.clip_id,
+      {
+        start: Number(clip.visible_start),
+        end: Number(clip.visible_end),
+      },
+    ])
+  );
+}
+
+function sanitizeAiRange(raw, clipRanges) {
+  const clipId = cleanText(raw?.source_clip_id, null, 160);
+  const bounds = clipId ? clipRanges.get(clipId) : null;
+  if (!bounds) return null;
+  const start = clampNumber(raw?.source_start, bounds.start, bounds.end);
+  const end = clampNumber(raw?.source_end, bounds.start, bounds.end);
+  if (start == null || end == null || end <= start) return null;
+  return {
+    source_clip_id: clipId,
+    source_start: roundSeconds(start),
+    source_end: roundSeconds(end),
+  };
+}
+
+function sanitizeAiTimelineEntry(raw, index, clipRanges) {
+  const range = sanitizeAiRange(raw, clipRanges);
+  if (!range) return null;
+  if (range.source_end - range.source_start < 0.25) return null;
+  return {
+    edit_id: cleanText(raw?.edit_id, `edit_${String(index + 1).padStart(3, "0")}`, 120),
+    ...range,
+    text: cleanText(raw?.text, "", 2000) || "",
+    scene_type: [
+      "complete_take",
+      "intro",
+      "main_point",
+      "transition",
+      "outro",
+      "context",
+    ].includes(raw?.scene_type)
+      ? raw.scene_type
+      : "complete_take",
+    can_stand_alone: Boolean(raw?.can_stand_alone),
+    reason: cleanText(raw?.reason, "Selected by AI edit.", 1000) || "Selected by AI edit.",
+    confidence: Math.min(1, Math.max(0, finiteNumber(raw?.confidence, 0))),
+  };
+}
+
+function sanitizeAiRemovedEntry(raw, clipRanges) {
+  const range = sanitizeAiRange(raw, clipRanges);
+  if (!range) return null;
+  return {
+    ...range,
+    reason: cleanText(raw?.reason, "Removed by AI edit.", 1000) || "Removed by AI edit.",
+  };
+}
+
+function sanitizeAiWarning(raw, clipRanges) {
+  const range = sanitizeAiRange(raw, clipRanges);
+  if (!range) return null;
+  const severity = ["info", "review", "risk"].includes(raw?.severity) ? raw.severity : "review";
+  return {
+    ...range,
+    severity,
+    message: cleanText(raw?.message, "Review this boundary.", 1000) || "Review this boundary.",
+  };
+}
+
+function sanitizeAiEditPlan(rawPlan, request) {
+  const clipRanges = aiClipRangeMap(request.clips);
+  const timeline = (Array.isArray(rawPlan?.timeline) ? rawPlan.timeline : [])
+    .map((entry, index) => sanitizeAiTimelineEntry(entry, index, clipRanges))
+    .filter(Boolean);
+  if (!timeline.length) {
+    throw httpError(502, "AI returned an empty edit timeline.");
+  }
+
+  const warnings = (Array.isArray(rawPlan?.warnings) ? rawPlan.warnings : [])
+    .map((entry) => sanitizeAiWarning(entry, clipRanges))
+    .filter(Boolean);
+  for (const entry of timeline) {
+    if (!entry.can_stand_alone) {
+      warnings.push({
+        source_clip_id: entry.source_clip_id,
+        source_start: entry.source_start,
+        source_end: entry.source_end,
+        severity: "review",
+        message: "AI selected this scene but marked it as not fully standalone.",
+      });
+    }
+  }
+
+  return {
+    version: "tidycut_ai_edit_v1",
+    model: anthropicEditModel,
+    editing_mode: cleanText(rawPlan?.editing_mode, request.mode, 120) || request.mode,
+    summary: cleanText(rawPlan?.summary, "AI generated a first-pass edit.", 2000),
+    timeline,
+    removed: (Array.isArray(rawPlan?.removed) ? rawPlan.removed : [])
+      .map((entry) => sanitizeAiRemovedEntry(entry, clipRanges))
+      .filter(Boolean),
+    warnings,
+  };
+}
+
+app.post("/api/ai/edit-plan", async (request, response) => {
+  let editRequest;
+  try {
+    editRequest = cleanAiEditRequest(request.body || {});
+    const { plan: rawPlan, usage } = await callAnthropicAiEdit(editRequest);
+    const plan = sanitizeAiEditPlan(rawPlan, editRequest);
+    response.json({
+      model: anthropicEditModel,
+      itemCount: editRequest.itemCount,
+      usage,
+      plan,
+    });
+  } catch (error) {
+    response.status(error.status || 500).json({
+      error: error instanceof Error ? error.message : String(error),
+      code: error.code || null,
+    });
+  }
+});
+
 function execFileAsync(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     execFile(command, args, options, (error, stdout, stderr) => {
@@ -747,9 +1271,13 @@ async function readCachedTimelineAssets(assetDir, source, sourceStat) {
     const raw = await fs.readFile(path.join(assetDir, "manifest.json"), "utf8");
     const manifest = JSON.parse(raw);
     const valid =
+      manifest?.version === timelineAssetVersion &&
       manifest?.source?.path === source.path &&
       manifest?.source?.size === sourceStat.size &&
       manifest?.source?.mtimeMs === sourceStat.mtimeMs &&
+      manifest?.thumbnail?.intervalSeconds === timelineThumbIntervalSeconds &&
+      manifest?.thumbnail?.width === timelineThumbWidth &&
+      manifest?.thumbnail?.height === timelineThumbHeight &&
       Array.isArray(manifest?.thumbnails) &&
       Array.isArray(manifest?.waveform?.peaks);
     if (!valid) return null;
@@ -818,13 +1346,34 @@ async function generateTimelineAssets(projectDir, source) {
 
   const duration = await probeSourceDuration(source.path);
   const cacheKey = `${Math.round(sourceStat.mtimeMs)}-${sourceStat.size}`;
-  const thumbnails = [];
   const lastFrameTime = Math.max(0, duration - 0.05);
 
-  for (let index = 0; index < timelineThumbCount; index += 1) {
-    const time =
-      timelineThumbCount === 1 ? 0 : (lastFrameTime * index) / (timelineThumbCount - 1);
-    const file = `thumb-${String(index).padStart(2, "0")}.jpg`;
+  await execFileAsync(
+    "ffmpeg",
+    [
+      "-y",
+      "-v",
+      "error",
+      "-i",
+      source.path,
+      "-an",
+      "-vf",
+      `fps=1/${timelineThumbIntervalSeconds},scale=${timelineThumbWidth}:${timelineThumbHeight}:force_original_aspect_ratio=decrease,pad=${timelineThumbWidth}:${timelineThumbHeight}:(ow-iw)/2:(oh-ih)/2,format=yuvj420p`,
+      "-q:v",
+      "5",
+      "-start_number",
+      "0",
+      path.join(assetDir, "thumb-%05d.jpg"),
+    ],
+    { maxBuffer: 1024 * 1024 * 5 }
+  );
+
+  let thumbnailFiles = (await fs.readdir(assetDir))
+    .filter((file) => /^thumb-\d{5,}\.jpg$/.test(file))
+    .sort();
+
+  if (thumbnailFiles.length === 0) {
+    const file = "thumb-00000.jpg";
     await execFileAsync(
       "ffmpeg",
       [
@@ -832,7 +1381,7 @@ async function generateTimelineAssets(projectDir, source) {
         "-v",
         "error",
         "-ss",
-        time.toFixed(3),
+        "0",
         "-i",
         source.path,
         "-frames:v",
@@ -845,12 +1394,18 @@ async function generateTimelineAssets(projectDir, source) {
       ],
       { maxBuffer: 1024 * 1024 * 5 }
     );
-    thumbnails.push({ file, time: Number(time.toFixed(3)) });
+    thumbnailFiles = [file];
   }
+
+  const thumbnails = thumbnailFiles.map((file, index) => ({
+    file,
+    time: Number(Math.min(lastFrameTime, index * timelineThumbIntervalSeconds).toFixed(3)),
+  }));
 
   const waveformPeaks = await buildWaveformPeaks(source.path);
 
   const manifest = {
+    version: timelineAssetVersion,
     source: {
       path: source.path,
       size: sourceStat.size,
@@ -858,6 +1413,11 @@ async function generateTimelineAssets(projectDir, source) {
     },
     cacheKey,
     duration,
+    thumbnail: {
+      intervalSeconds: timelineThumbIntervalSeconds,
+      width: timelineThumbWidth,
+      height: timelineThumbHeight,
+    },
     thumbnails,
     waveform: {
       peaks: waveformPeaks,
@@ -995,7 +1555,7 @@ app.get("/api/projects/:projectId/timeline-assets", async (request, response) =>
 app.get("/api/projects/:projectId/timeline-assets/:fileName", async (request, response) => {
   const projectDir = resolveProjectDir(request.params.projectId);
   const fileName = String(request.params.fileName || "");
-  if (!projectDir || !/^thumb-\d{2}\.jpg$/.test(fileName)) {
+  if (!projectDir || !/^thumb-\d{5,}\.jpg$/.test(fileName)) {
     response.status(400).json({ error: "Invalid timeline asset." });
     return;
   }
@@ -1094,9 +1654,10 @@ app.delete("/api/audio-preview/:jobId", (request, response) => {
   response.json(serializeAudioPreviewJob(job));
 });
 
-function httpError(status, message) {
+function httpError(status, message, code = null) {
   const error = new Error(message);
   error.status = status;
+  if (code) error.code = code;
   return error;
 }
 

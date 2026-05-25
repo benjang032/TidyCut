@@ -1,20 +1,10 @@
-import {
-  Check,
-  Clock3,
-  FilePlus2,
-  Film,
-  FolderOpen,
-  Loader2,
-  RefreshCcw,
-  Trash2,
-  X,
-} from "lucide-react";
+import { Loader2, Plus, Settings, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatClock } from "../editorModel";
 
 function formatSavedAt(value) {
   const date = new Date(Number(value) || 0);
-  if (!Number.isFinite(date.getTime()) || date.getTime() <= 0) return "Never saved";
+  if (!Number.isFinite(date.getTime()) || date.getTime() <= 0) return "Never";
   return new Intl.DateTimeFormat(undefined, {
     month: "short",
     day: "numeric",
@@ -23,14 +13,7 @@ function formatSavedAt(value) {
   }).format(date);
 }
 
-function formatFileList(project) {
-  const files = Array.isArray(project.fileNames) ? project.fileNames.filter(Boolean) : [];
-  if (!files.length) return "No clips yet";
-  if (files.length === 1) return files[0];
-  return `${files[0]} +${files.length - 1} more`;
-}
-
-export function ProjectBrowser({
+export function ProjectSidebar({
   open,
   projects,
   currentProjectId,
@@ -40,12 +23,12 @@ export function ProjectBrowser({
   onOpenProject,
   onNewProject,
   onDeleteProject,
-  onRefresh,
+  onOpenSettings,
 }) {
   const [pendingId, setPendingId] = useState(null);
-  const [pendingAction, setPendingAction] = useState(null); // "open" | "new" | "delete"
+  const [pendingAction, setPendingAction] = useState(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
-  const dialogRef = useRef(null);
+  const panelRef = useRef(null);
 
   useEffect(() => {
     if (!open) {
@@ -74,7 +57,7 @@ export function ProjectBrowser({
   useEffect(() => {
     if (!open) return;
     requestAnimationFrame(() => {
-      dialogRef.current?.focus();
+      panelRef.current?.focus();
     });
   }, [open]);
 
@@ -151,96 +134,81 @@ export function ProjectBrowser({
   if (!open) return null;
 
   const hasProjects = projects.length > 0;
+  const runAndClose = (handler) => {
+    if (typeof handler !== "function") return;
+    handler();
+    onClose();
+  };
 
   return (
-    <div className="overlay" role="presentation" onMouseDown={onClose}>
-      <section
-        className="project-browser"
+    <div className="sidebar-overlay" role="presentation" onMouseDown={onClose}>
+      <aside
+        className="project-sidebar"
         role="dialog"
         aria-modal="true"
         aria-label="Projects"
         tabIndex={-1}
-        ref={dialogRef}
+        ref={panelRef}
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <header className="project-browser-head">
-          <div>
-            <span className="project-browser-kicker">Projects</span>
-            <h2>Your edit projects</h2>
-            <p className="project-browser-sub">
-              Pick up where you left off, or start fresh. Edits autosave.
-            </p>
-          </div>
-          <div className="project-browser-actions">
+        <header className="project-sidebar-head">
+          <h2>Projects</h2>
+          <div className="project-sidebar-head-actions">
             <button
               type="button"
-              className="btn ghost"
-              onClick={onRefresh}
-              disabled={loading || isBusy}
-              title="Refresh project list"
+              className="project-sidebar-iconbtn"
+              onClick={() => runAndClose(onOpenSettings)}
+              title="Settings"
+              aria-label="Settings"
             >
-              {loading ? <Loader2 className="spin" size={14} /> : <RefreshCcw size={14} />}
-              <span>Refresh</span>
+              <Settings size={14} />
             </button>
             <button
               type="button"
-              className="btn primary"
+              className="project-sidebar-iconbtn"
               onClick={createProject}
               disabled={isBusy}
+              title="New project"
+              aria-label="New project"
             >
               {pendingAction === "new" ? (
                 <Loader2 className="spin" size={14} />
               ) : (
-                <FilePlus2 size={14} />
+                <Plus size={14} />
               )}
-              <span>New project</span>
             </button>
             <button
               type="button"
-              className="btn icon"
+              className="project-sidebar-iconbtn"
               onClick={onClose}
               title="Close (Esc)"
               aria-label="Close"
             >
-              <X size={16} />
+              <X size={14} />
             </button>
           </div>
         </header>
 
         {error ? (
-          <div className="project-browser-error" role="alert">
+          <div className="project-sidebar-error" role="alert">
             {error}
           </div>
         ) : null}
 
-        <div className="project-list">
+        <div className="project-sidebar-list">
           {loading && !hasProjects ? (
-            <div className="project-list-empty">
-              <Loader2 className="spin" size={18} />
-              <span>Loading projects…</span>
+            <div className="project-sidebar-empty">
+              <Loader2 className="spin" size={14} />
+              <span>Loading…</span>
             </div>
           ) : null}
 
           {!loading && !hasProjects ? (
-            <div className="project-list-empty is-cta">
-              <FolderOpen size={26} />
-              <span className="project-list-empty-title">No saved projects yet</span>
-              <span className="project-list-empty-sub">
-                Start a new one — it'll appear here as soon as you add a clip.
+            <div className="project-sidebar-empty">
+              <span className="project-sidebar-empty-title">No projects yet</span>
+              <span className="project-sidebar-empty-sub">
+                Add a clip and your project appears here.
               </span>
-              <button
-                type="button"
-                className="btn primary"
-                onClick={createProject}
-                disabled={isBusy}
-              >
-                {pendingAction === "new" ? (
-                  <Loader2 className="spin" size={14} />
-                ) : (
-                  <FilePlus2 size={14} />
-                )}
-                <span>Create your first project</span>
-              </button>
             </div>
           ) : null}
 
@@ -264,10 +232,16 @@ export function ProjectBrowser({
               }
             };
 
+            const metaParts = [
+              `${project.clipCount || 0} clip${project.clipCount === 1 ? "" : "s"}`,
+              project.duration > 0 ? formatClock(project.duration) : null,
+              formatSavedAt(project.updatedAt || project.createdAt),
+            ].filter(Boolean);
+
             return (
               <div
                 key={project.id}
-                className={`project-row${isCurrent ? " is-current" : ""}${
+                className={`sidebar-row${isCurrent ? " is-current" : ""}${
                   isConfirmingDelete ? " is-confirming-delete" : ""
                 }`}
                 role="button"
@@ -280,52 +254,31 @@ export function ProjectBrowser({
                 }}
                 onKeyDown={onRowKeyDown}
               >
-                <span className="project-row-icon" aria-hidden="true">
-                  {isOpening || isDeleting ? (
-                    <Loader2 className="spin" size={16} />
-                  ) : isCurrent ? (
-                    <Check size={16} />
-                  ) : (
-                    <Film size={16} />
-                  )}
-                </span>
-                <span className="project-row-main">
-                  <span className="project-row-name-line">
-                    <span className="project-row-name">
+                <span className="sidebar-row-marker" aria-hidden="true" />
+                <div className="sidebar-row-main">
+                  <span className="sidebar-row-name">
+                    <span className="sidebar-row-name-text">
                       {project.name || "Untitled project"}
                     </span>
-                    {isCurrent ? <span className="project-row-tag">Current</span> : null}
+                    {isOpening || isDeleting ? (
+                      <Loader2 className="spin" size={11} />
+                    ) : null}
                   </span>
-                  <span className="project-row-files">{formatFileList(project)}</span>
-                </span>
-                <span className="project-row-meta">
-                  <span>
-                    {project.clipCount || 0} clip{project.clipCount === 1 ? "" : "s"}
-                  </span>
-                  {project.duration > 0 ? <span>{formatClock(project.duration)}</span> : null}
-                  <span>
-                    <Clock3 size={12} />
-                    {formatSavedAt(project.updatedAt || project.createdAt)}
-                  </span>
-                </span>
+                  <span className="sidebar-row-meta">{metaParts.join(" · ")}</span>
+                </div>
 
                 {isConfirmingDelete ? (
                   <div
-                    className="project-row-confirm"
+                    className="sidebar-row-confirm"
                     role="alertdialog"
                     aria-label={`Delete ${project.name || "Untitled project"}?`}
                     onClick={(event) => event.stopPropagation()}
                   >
-                    <span className="project-row-confirm-text">
-                      Delete <strong>{project.name || "Untitled project"}</strong>?
-                      <span className="project-row-confirm-sub">
-                        Source video files are not removed.
-                      </span>
-                    </span>
-                    <div className="project-row-confirm-actions">
+                    <span className="sidebar-row-confirm-text">Delete this project?</span>
+                    <div className="sidebar-row-confirm-actions">
                       <button
                         type="button"
-                        className="btn ghost"
+                        className="sidebar-row-confirm-btn"
                         onClick={cancelDelete}
                         disabled={isDeleting}
                       >
@@ -333,37 +286,36 @@ export function ProjectBrowser({
                       </button>
                       <button
                         type="button"
-                        className="btn cut"
+                        className="sidebar-row-confirm-btn is-danger"
                         onClick={(event) => confirmDelete(event, project.id)}
                         disabled={isDeleting}
                         autoFocus
                       >
                         {isDeleting ? (
-                          <Loader2 className="spin" size={13} />
+                          <Loader2 className="spin" size={12} />
                         ) : (
-                          <Trash2 size={13} />
+                          "Delete"
                         )}
-                        <span>Delete</span>
                       </button>
                     </div>
                   </div>
                 ) : (
                   <button
                     type="button"
-                    className="project-row-delete"
+                    className="sidebar-row-delete"
                     onClick={(event) => requestDelete(event, project.id)}
                     disabled={isBusy}
                     title="Delete project"
                     aria-label={`Delete ${project.name || "Untitled project"}`}
                   >
-                    <Trash2 size={14} />
+                    <Trash2 size={12} />
                   </button>
                 )}
               </div>
             );
           })}
         </div>
-      </section>
+      </aside>
     </div>
   );
 }

@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CopyPanel } from "./components/CopyPanel";
-import { ProjectBrowser } from "./components/ProjectBrowser";
+import { ProjectSidebar } from "./components/ProjectSidebar";
+import { SettingsModal } from "./components/SettingsModal";
 import { Timeline } from "./components/Timeline";
 import { Topbar } from "./components/Topbar";
 import { TranscriptPane } from "./components/TranscriptPane";
+import {
+  AI_EDIT_URL,
+  ANTHROPIC_SETTINGS_URL,
+  applyAiEditPlanToClips,
+  buildAiEditRequestClips,
+} from "./aiEditModel";
 import { VideoPane } from "./components/VideoPane";
 import {
   DEFAULT_MODEL,
@@ -24,6 +31,7 @@ import {
   buildSequencePlaybackEntries,
   buildSequenceRenderClips,
   buildSequenceTranscriptItems,
+  extendSelectedClipEdges,
   getClipDurations,
   getClipTimeline,
   getClipTrimRange,
@@ -32,6 +40,7 @@ import {
   getSequenceDurations,
   getSequencePlainText,
   getSequenceTranscriptCut,
+  getSelectedClipEdgeExtensionState,
   isSequencePlaybackComplete,
   moveClipBefore,
   sequenceTimeToSourceTime,
@@ -44,6 +53,7 @@ import {
   DEFAULT_PROJECT_NAME,
   EDIT_PROJECTS_URL,
   LAST_PROJECT_STORAGE_KEY,
+  normalizeAudioProcessing,
   hydrateProjectDocument,
   projectDocumentSignature,
   serializeProjectDocument,
@@ -53,6 +63,7 @@ const RENDER_URL = "/api/render";
 const REFERENCES_URL = "/api/references";
 const AUDIO_PREVIEW_URL = "/api/audio-preview";
 const UNDO_LIMIT = 50;
+const DEFAULT_TRANSCRIPTION_MODEL_STORAGE_KEY = "local-editor:default-transcription-model";
 
 function readLastProjectId() {
   try {
@@ -66,6 +77,24 @@ function writeLastProjectId(projectId) {
   if (!projectId) return;
   try {
     window.localStorage.setItem(LAST_PROJECT_STORAGE_KEY, projectId);
+  } catch {
+    // localStorage can be unavailable in locked-down browser contexts.
+  }
+}
+
+function readDefaultTranscriptionModel() {
+  try {
+    const model = window.localStorage.getItem(DEFAULT_TRANSCRIPTION_MODEL_STORAGE_KEY);
+    return typeof model === "string" && model.trim() ? model.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeDefaultTranscriptionModel(model) {
+  if (!model) return;
+  try {
+    window.localStorage.setItem(DEFAULT_TRANSCRIPTION_MODEL_STORAGE_KEY, model);
   } catch {
     // localStorage can be unavailable in locked-down browser contexts.
   }
@@ -90,6 +119,74 @@ function cloneClipForUndo(clip) {
 
 function cloneClipsForUndo(clips) {
   return Array.isArray(clips) ? clips.map(cloneClipForUndo) : [];
+}
+
+function normalizeMediaSourceClip(clip) {
+  if (!clip?.id) return null;
+  const mediaSourceId = clip.mediaSourceId || clip.id;
+  return {
+    ...cloneClipForUndo(clip),
+    id: mediaSourceId,
+    mediaSourceId,
+    trimStart: 0,
+    trimEnd: null,
+    cut: new Set(),
+    aiEdit: undefined,
+  };
+}
+
+function mediaSourceSignature(source) {
+  return JSON.stringify({
+    id: source?.id || null,
+    mediaSourceId: source?.mediaSourceId || null,
+    projectId: source?.projectId || null,
+    videoPath: source?.videoPath || null,
+    videoUrl: source?.videoUrl || null,
+    fileName: source?.fileName || null,
+    status: source?.status || null,
+    error: source?.error || null,
+    duration: source?.duration || 0,
+    wordCount: source?.wordCount || 0,
+    items: (source?.items || []).map((item) => [item.id, item.start, item.end, item.kind, item.text]),
+  });
+}
+
+function sameMediaSources(a, b) {
+  const left = Array.isArray(a) ? a.map(mediaSourceSignature) : [];
+  const right = Array.isArray(b) ? b.map(mediaSourceSignature) : [];
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function upsertMediaSource(sources, clip) {
+  const source = normalizeMediaSourceClip(clip);
+  if (!source) return sources;
+
+  const next = Array.isArray(sources) ? [...sources] : [];
+  const index = next.findIndex(
+    (candidate) =>
+      candidate.id === source.id ||
+      (source.projectId && candidate.projectId === source.projectId) ||
+      (source.videoPath && candidate.videoPath === source.videoPath)
+  );
+  if (index >= 0) {
+    next[index] = source;
+  } else {
+    next.push(source);
+  }
+  return sameMediaSources(sources, next) ? sources : next;
+}
+
+function makeTimelineCopyFromSource(source, id) {
+  const mediaSourceId = source.mediaSourceId || source.id;
+  return {
+    ...cloneClipForUndo(source),
+    id,
+    mediaSourceId,
+    trimStart: 0,
+    trimEnd: null,
+    cut: new Set(),
+    aiEdit: undefined,
+  };
 }
 
 function collectObjectUrls(clips) {
@@ -135,15 +232,30 @@ function upsertProjectSummary(summaries, summary) {
 
 export default function App() {
   const [clips, setClips] = useState([]);
+  const [mediaSources, setMediaSources] = useState([]);
   const [activeClipId, setActiveClipId] = useState(null);
   const [videoTime, setVideoTime] = useState(0);
   const [sequenceTime, setSequenceTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [copyOpen, setCopyOpen] = useState(false);
   const [copyState, setCopyState] = useState("idle");
-  const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
+  const [selectedModel, setSelectedModel] = useState(
+    () => readDefaultTranscriptionModel() || DEFAULT_MODEL
+  );
   const [renderStatus, setRenderStatus] = useState("idle");
   const [renderError, setRenderError] = useState("");
+  const [aiEditStatus, setAiEditStatus] = useState("idle");
+  const [aiEditError, setAiEditError] = useState("");
+  const [aiEditNotice, setAiEditNotice] = useState("");
+  const [aiEditModel, setAiEditModel] = useState("claude-opus-4-6");
+  const [anthropicSettings, setAnthropicSettings] = useState({
+    configured: false,
+    model: "claude-opus-4-6",
+    keySource: "none",
+  });
+  const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+  const [settingsState, setSettingsState] = useState("idle");
+  const [settingsError, setSettingsError] = useState("");
   const [audioProcessing, setAudioProcessing] = useState({
     denoise: false,
     normalize: false,
@@ -160,7 +272,7 @@ export default function App() {
   });
   const [currentProject, setCurrentProject] = useState(null);
   const [projectSummaries, setProjectSummaries] = useState([]);
-  const [projectBrowserOpen, setProjectBrowserOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [projectSaveState, setProjectSaveState] = useState("loading");
   const [projectError, setProjectError] = useState("");
 
@@ -177,6 +289,7 @@ export default function App() {
   const transcribingRef = useRef(false);
   const selectedModelRef = useRef(selectedModel);
   const clipsRef = useRef(clips);
+  const mediaSourcesRef = useRef(mediaSources);
   const currentProjectRef = useRef(currentProject);
   const projectBootstrappedRef = useRef(false);
   const lastSavedProjectSignatureRef = useRef("");
@@ -188,6 +301,7 @@ export default function App() {
   const resumeAfterScrubRef = useRef(false);
   const undoStackRef = useRef([]);
   const retainedObjectUrlsRef = useRef(new Set());
+  const runAiEditAfterKeySaveRef = useRef(false);
 
   useEffect(() => {
     selectedModelRef.current = selectedModel;
@@ -196,6 +310,10 @@ export default function App() {
   useEffect(() => {
     clipsRef.current = clips;
   }, [clips]);
+
+  useEffect(() => {
+    mediaSourcesRef.current = mediaSources;
+  }, [mediaSources]);
 
   useEffect(() => {
     currentProjectRef.current = currentProject;
@@ -300,8 +418,13 @@ export default function App() {
     const entry = getNextReadyPlaybackEntry(sequenceClips, activeClipId);
     return entry?.clip || null;
   }, [activeClipId, sequenceClips]);
+  const clipEdgeExtensionState = useMemo(
+    () => getSelectedClipEdgeExtensionState(sequenceClips, items, cut, selection, 0.1),
+    [cut, items, selection, sequenceClips]
+  );
 
   const isRendering = renderStatus === "rendering";
+  const isAiEditing = aiEditStatus === "planning";
   const hasSequenceTranscript = items.length > 0;
   const hasActiveTranscript = activeTranscriptItems.length > 0;
   const hasReadyClips = clips.some((clip) => clip.status === "ready");
@@ -309,6 +432,8 @@ export default function App() {
 
   const status = (() => {
     if (isRendering) return "rendering";
+    if (isAiEditing) return "ai-editing";
+    if (aiEditStatus === "error") return "error";
     if (
       activeClip?.status === "probing" ||
       activeClip?.status === "transcribing" ||
@@ -326,6 +451,9 @@ export default function App() {
     if (renderStatus === "rendering") {
       return clips.length > 1 ? "Rendering sequence…" : "Rendering…";
     }
+    if (isAiEditing) return `Planning edit with ${aiEditModel}…`;
+    if (aiEditStatus === "error") return "AI edit failed.";
+    if (aiEditNotice) return aiEditNotice;
     if (renderStatus === "error") return "Render failed.";
     if (activeClip?.status === "error") return "Transcription failed.";
     if (activeClip?.status === "probing") return `Reading ${activeClip.fileName} length…`;
@@ -343,12 +471,14 @@ export default function App() {
 
   const statusTone = (() => {
     if (status === "error") return "error";
-    if (status === "rendering" || status === "transcribing") return "busy";
+    if (status === "rendering" || status === "transcribing" || status === "ai-editing") {
+      return "busy";
+    }
     if (hasReadyClips || isAnyTranscribing) return "ready";
     return "idle";
   })();
 
-  const activeError = activeClip?.error || renderError || "";
+  const activeError = activeClip?.error || renderError || aiEditError || "";
   const activeVideoUrl = activeClip?.videoUrl || "";
   const activeStatus = activeClip?.status || "idle";
   const activeDuration = activeClip?.duration || 0;
@@ -368,6 +498,7 @@ export default function App() {
     return serializeProjectDocument({
       project: currentProject,
       clips,
+      mediaSources,
       activeClipId,
       selectedModel,
       audioProcessing,
@@ -379,6 +510,7 @@ export default function App() {
     currentProject?.createdAt,
     currentProject?.id,
     currentProject?.name,
+    mediaSources,
     selectedModel,
   ]);
 
@@ -487,11 +619,15 @@ export default function App() {
 
         const hydrated = hydrateProjectDocument(payload.project);
         revokeObjectUrls(clipsRef.current);
+        revokeObjectUrls(mediaSourcesRef.current);
         resetProjectRuntimeState();
         setCurrentProject(hydrated.project);
         setClips(hydrated.clips);
+        setMediaSources(hydrated.mediaSources || []);
         setActiveClipId(hydrated.activeClipId);
-        setSelectedModel(hydrated.selectedModel || selectedModelRef.current);
+        setSelectedModel(
+          readDefaultTranscriptionModel() || hydrated.selectedModel || selectedModelRef.current
+        );
         setAudioProcessing(hydrated.audioProcessing);
         writeLastProjectId(hydrated.project.id);
         setProjectSummaries((summaries) =>
@@ -501,15 +637,17 @@ export default function App() {
           serializeProjectDocument({
             project: hydrated.project,
             clips: hydrated.clips,
+            mediaSources: hydrated.mediaSources || [],
             activeClipId: hydrated.activeClipId,
-            selectedModel: hydrated.selectedModel || selectedModelRef.current,
+            selectedModel:
+              readDefaultTranscriptionModel() || hydrated.selectedModel || selectedModelRef.current,
             audioProcessing: hydrated.audioProcessing,
           })
         );
         projectBootstrappedRef.current = true;
         setProjectSaveState("saved");
         setProjectError("");
-        if (options.closeBrowser !== false) setProjectBrowserOpen(false);
+        if (options.closeBrowser !== false) setSidebarOpen(false);
       } catch (caught) {
         projectBootstrappedRef.current = true;
         setProjectSaveState("error");
@@ -555,9 +693,11 @@ export default function App() {
 
         const hydrated = hydrateProjectDocument(payload.project);
         revokeObjectUrls(clipsRef.current);
+        revokeObjectUrls(mediaSourcesRef.current);
         resetProjectRuntimeState();
         setCurrentProject(hydrated.project);
         setClips([]);
+        setMediaSources([]);
         setActiveClipId(null);
         setAudioProcessing({
           denoise: false,
@@ -574,6 +714,7 @@ export default function App() {
           serializeProjectDocument({
             project: hydrated.project,
             clips: [],
+            mediaSources: [],
             activeClipId: null,
             selectedModel: selectedModelRef.current,
             audioProcessing: {
@@ -588,7 +729,7 @@ export default function App() {
         projectBootstrappedRef.current = true;
         setProjectSaveState("saved");
         setProjectError("");
-        if (options.closeBrowser !== false) setProjectBrowserOpen(false);
+        if (options.closeBrowser !== false) setSidebarOpen(false);
         if (options.focusName !== false) focusProjectName();
       } catch (caught) {
         projectBootstrappedRef.current = true;
@@ -992,6 +1133,7 @@ export default function App() {
     if (!next) return;
 
     transcribingRef.current = true;
+    setMediaSources((curr) => upsertMediaSource(curr, { ...next, status: "transcribing" }));
     setClips((curr) =>
       curr.map((clip) => (clip.id === next.id ? { ...clip, status: "transcribing" } : clip))
     );
@@ -999,16 +1141,24 @@ export default function App() {
     (async () => {
       try {
         const payload = await runTranscriptionRequest(next._pending || {}, selectedModelRef.current);
+        let updatedClip = null;
         setClips((curr) => {
           const idx = curr.findIndex((clip) => clip.id === next.id);
           if (idx < 0) return curr;
           const updated = applyTranscriptToClip(curr[idx], payload);
+          updatedClip = updated;
           const result = [...curr];
           result[idx] = updated;
           return result;
         });
+        if (updatedClip) {
+          setMediaSources((curr) => upsertMediaSource(curr, updatedClip));
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        setMediaSources((curr) =>
+          upsertMediaSource(curr, { ...next, status: "error", error: message })
+        );
         setClips((curr) =>
           curr.map((clip) =>
             clip.id === next.id ? { ...clip, status: "error", error: message } : clip
@@ -1026,10 +1176,18 @@ export default function App() {
     fetch("/api/health")
       .then((response) => (response.ok ? response.json() : null))
       .then((payload) => {
-        if (!cancelled && payload?.model) {
+        if (!cancelled && payload?.model && !readDefaultTranscriptionModel()) {
           setSelectedModel((current) => {
             if (current !== DEFAULT_MODEL || clipsRef.current.length > 0) return current;
             return payload.model;
+          });
+        }
+        if (!cancelled && payload?.aiEdit?.model) {
+          setAiEditModel(payload.aiEdit.model);
+          setAnthropicSettings({
+            configured: Boolean(payload.aiEdit.available),
+            model: payload.aiEdit.model,
+            keySource: payload.aiEdit.keySource || "none",
           });
         }
       })
@@ -1076,6 +1234,7 @@ export default function App() {
     return () => {
       if (saveProjectTimerRef.current) window.clearTimeout(saveProjectTimerRef.current);
       revokeObjectUrls(clipsRef.current);
+      revokeObjectUrls(mediaSourcesRef.current);
       for (const url of retainedObjectUrlsRef.current) {
         URL.revokeObjectURL(url);
       }
@@ -1389,6 +1548,22 @@ export default function App() {
     restoreSelectedInEditor();
   }, [pushUndoSnapshot, restoreSelectedInEditor, selection.size, selectionStats.cutCount]);
 
+  const expandSelectionLeft = useCallback(() => {
+    if (!selection.size || !clipEdgeExtensionState.canExtendLeft) return;
+    const next = extendSelectedClipEdges(sequenceClips, items, cut, selection, "left", 0.1);
+    if (next === sequenceClips || sameClipEditState(sequenceClips, next)) return;
+    pushUndoSnapshot();
+    setClips(next);
+  }, [clipEdgeExtensionState.canExtendLeft, cut, items, pushUndoSnapshot, selection, sequenceClips]);
+
+  const expandSelectionRight = useCallback(() => {
+    if (!selection.size || !clipEdgeExtensionState.canExtendRight) return;
+    const next = extendSelectedClipEdges(sequenceClips, items, cut, selection, "right", 0.1);
+    if (next === sequenceClips || sameClipEditState(sequenceClips, next)) return;
+    pushUndoSnapshot();
+    setClips(next);
+  }, [clipEdgeExtensionState.canExtendRight, cut, items, pushUndoSnapshot, selection, sequenceClips]);
+
   useEffect(() => {
     const onKey = (event) => {
       const target = event.target;
@@ -1470,11 +1645,18 @@ export default function App() {
     (files) => {
       if (!files?.length) return;
       const newClips = files.map((file) => makeUploadClip(file));
+      setMediaSources((curr) => newClips.reduce(upsertMediaSource, curr));
       setClips((curr) => [...curr, ...newClips]);
       setActiveClipId((prev) => prev || newClips[0].id);
 
       for (const clip of newClips) {
         readVideoDurationFromUrl(clip.videoUrl).then((duration) => {
+          const withDuration = {
+            ...clip,
+            duration: clip.duration || duration,
+            status: clip.status === "probing" ? "queued" : clip.status,
+          };
+          setMediaSources((curr) => upsertMediaSource(curr, withDuration));
           setClips((curr) =>
             curr.map((current) =>
               current.id === clip.id
@@ -1509,11 +1691,16 @@ export default function App() {
       source: payload.source,
     });
     const clip = makeReferencedClip(reference);
+    setMediaSources((curr) => upsertMediaSource(curr, clip));
     setClips((curr) => [...curr, clip]);
     setActiveClipId((prev) => prev || clip.id);
   }, []);
 
   const retryClip = useCallback((clipId) => {
+    const target = clipsRef.current.find((clip) => clip.id === clipId);
+    if (target?.status === "error" && target._pending) {
+      setMediaSources((curr) => upsertMediaSource(curr, { ...target, status: "queued", error: null }));
+    }
     setClips((curr) =>
       curr.map((clip) =>
         clip.id === clipId && clip.status === "error" && clip._pending
@@ -1622,6 +1809,155 @@ export default function App() {
     }
   }, [audioProcessing, isRendering, renderClips, sequenceClips]);
 
+  const runAiEdit = useCallback(async (options = {}) => {
+    if (isAiEditing || isAnyTranscribing || !hasReadyClips) return;
+
+    if (!options.skipKeyCheck && !anthropicSettings.configured) {
+      runAiEditAfterKeySaveRef.current = true;
+      setSettingsError("");
+      setSettingsState("idle");
+      setSettingsModalOpen(true);
+      return;
+    }
+
+    const requestClips = buildAiEditRequestClips(sequenceClips);
+    if (!requestClips.length) {
+      setAiEditStatus("error");
+      setAiEditError("AI edit needs a ready clip with word-level transcript timestamps.");
+      return;
+    }
+
+    pauseCurrentMedia();
+    setAiEditStatus("planning");
+    setAiEditError("");
+    setAiEditNotice("");
+    setRenderStatus("idle");
+    setRenderError("");
+
+    try {
+      const response = await fetch(AI_EDIT_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "coherence_story_v1",
+          instructions:
+            "Make a conservative first-pass edit for coherence and storytelling. Treat each selected range as a complete video scene.",
+          clips: requestClips,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        if (payload?.code === "ANTHROPIC_API_KEY_MISSING") {
+          runAiEditAfterKeySaveRef.current = true;
+          setSettingsError("");
+          setSettingsState("idle");
+          setSettingsModalOpen(true);
+          setAiEditStatus("idle");
+          return;
+        }
+        throw new Error(payload.error || "AI edit failed.");
+      }
+
+      const result = applyAiEditPlanToClips(sequenceClips, payload.plan, () => makeClipId("ai"));
+      if (!result.clips.length) {
+        throw new Error("AI returned no usable scene ranges.");
+      }
+
+      pushUndoSnapshot();
+      clearSelection();
+      pendingMediaSeekRef.current = {
+        clipId: result.clips[0].id,
+        sourceTime: result.clips[0].trimStart || 0,
+        playAfter: false,
+      };
+      setClips(result.clips);
+      setActiveClipId(result.clips[0].id);
+      setVideoTime(result.clips[0].trimStart || 0);
+      setSequenceTime(0);
+      setAiEditStatus("idle");
+      setAiEditNotice(
+        `AI edit applied: ${result.clips.length} scene${result.clips.length === 1 ? "" : "s"}.`
+      );
+    } catch (caught) {
+      setAiEditStatus("error");
+      setAiEditError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }, [
+    clearSelection,
+    anthropicSettings.configured,
+    hasReadyClips,
+    isAiEditing,
+    isAnyTranscribing,
+    pauseCurrentMedia,
+    pushUndoSnapshot,
+    sequenceClips,
+  ]);
+
+  const closeSettingsModal = useCallback(() => {
+    if (settingsState === "saving") return;
+    runAiEditAfterKeySaveRef.current = false;
+    setSettingsModalOpen(false);
+    setSettingsError("");
+  }, [settingsState]);
+
+  const saveSettings = useCallback(
+    async ({ selectedModel: nextModel, audioProcessing: nextAudioProcessing, apiKey }) => {
+      const cleanedModel = String(nextModel || selectedModelRef.current || DEFAULT_MODEL).trim();
+      const cleanedAudioProcessing = normalizeAudioProcessing(nextAudioProcessing);
+      const trimmedApiKey = typeof apiKey === "string" ? apiKey.trim() : "";
+
+      if (runAiEditAfterKeySaveRef.current && !anthropicSettings.configured && !trimmedApiKey) {
+        setSettingsState("error");
+        setSettingsError("Enter your Anthropic API key to use AI edit.");
+        return;
+      }
+
+      setSettingsState("saving");
+      setSettingsError("");
+      setSelectedModel(cleanedModel);
+      selectedModelRef.current = cleanedModel;
+      writeDefaultTranscriptionModel(cleanedModel);
+      setAudioProcessing(cleanedAudioProcessing);
+
+      try {
+        let savedKey = false;
+        if (trimmedApiKey) {
+          const response = await fetch(ANTHROPIC_SETTINGS_URL, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ apiKey: trimmedApiKey }),
+          });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.error || "Failed to save Anthropic key.");
+
+          const nextSettings = {
+            configured: Boolean(payload.configured),
+            model: payload.model || aiEditModel,
+            keySource: payload.keySource || "local",
+          };
+          setAnthropicSettings(nextSettings);
+          if (nextSettings.model) setAiEditModel(nextSettings.model);
+          savedKey = true;
+        }
+
+        setSettingsState("idle");
+        setSettingsModalOpen(false);
+        setAiEditNotice(savedKey ? "Settings saved. Anthropic key updated." : "Settings saved.");
+
+        if (savedKey && runAiEditAfterKeySaveRef.current) {
+          runAiEditAfterKeySaveRef.current = false;
+          window.setTimeout(() => runAiEdit({ skipKeyCheck: true }), 0);
+        } else {
+          runAiEditAfterKeySaveRef.current = false;
+        }
+      } catch (caught) {
+        setSettingsState("error");
+        setSettingsError(caught instanceof Error ? caught.message : String(caught));
+      }
+    },
+    [aiEditModel, anthropicSettings.configured, runAiEdit]
+  );
+
   const copyText = useCallback(async () => {
     if (!sequencePlainText) return;
     try {
@@ -1669,6 +2005,33 @@ export default function App() {
     pushUndoSnapshot();
     setClips(next);
   }, [pushUndoSnapshot, sequenceClips]);
+
+  const addClipCopy = useCallback(
+    (sourceId, targetId = null, side = "after") => {
+      const source = mediaSources.find((candidate) => candidate.id === sourceId);
+      if (!source || source.status !== "ready") return;
+
+      const copy = makeTimelineCopyFromSource(source, makeClipId("copy"));
+      const next = [...sequenceClips];
+      const targetIndex = targetId ? next.findIndex((clip) => clip.id === targetId) : -1;
+      const insertIndex =
+        targetIndex < 0 ? next.length : side === "before" ? targetIndex : targetIndex + 1;
+      next.splice(insertIndex, 0, copy);
+
+      pushUndoSnapshot();
+      pendingMediaSeekRef.current = {
+        clipId: copy.id,
+        sourceTime: 0,
+        playAfter: false,
+      };
+      setClips(next);
+      setActiveClipId(copy.id);
+      setVideoTime(0);
+      setSequenceTime(sourceTimeToSequenceTime(next, copy.id, 0));
+      setActiveTranscriptForSourceTime(copy.id, 0);
+    },
+    [mediaSources, pushUndoSnapshot, sequenceClips, setActiveTranscriptForSourceTime]
+  );
 
   const removeClip = useCallback(
     (clipId) => {
@@ -1788,11 +2151,14 @@ export default function App() {
     setCurrentProject((project) => (project ? { ...project, name } : project));
   }, []);
 
-  const openProjectBrowser = useCallback(() => {
-    setProjectBrowserOpen(true);
-    refreshProjectSummaries().catch((caught) => {
-      setProjectSaveState("error");
-      setProjectError(caught instanceof Error ? caught.message : String(caught));
+  const toggleSidebar = useCallback(() => {
+    setSidebarOpen((prev) => {
+      if (prev) return false;
+      refreshProjectSummaries().catch((caught) => {
+        setProjectSaveState("error");
+        setProjectError(caught instanceof Error ? caught.message : String(caught));
+      });
+      return true;
     });
   }, [refreshProjectSummaries]);
 
@@ -1802,27 +2168,19 @@ export default function App() {
         fileInputRef={fileInputRef}
         projectNameInputRef={projectNameInputRef}
         status={status}
-        statusText={statusText}
-        statusTone={statusTone}
         projectName={currentProject?.name || DEFAULT_PROJECT_NAME}
         projectSaveState={projectSaveState}
         projectError={projectError}
         hasTranscript={hasReadyClips}
-        durations={sequenceDurations}
-        sourceDuration={sequenceSourceDuration}
-        isBusy={isRendering}
-        canRender={renderClips.length > 0 && !isRendering}
-        modelOptions={modelOptions}
-        selectedModel={selectedModel}
-        audioProcessing={audioProcessing}
+        isAiEditing={isAiEditing}
+        canAiEdit={hasReadyClips && !isRendering && !isAiEditing && !isAnyTranscribing}
+        canRender={renderClips.length > 0 && !isRendering && !isAiEditing}
+        isBusy={isRendering || isAiEditing}
         onProjectNameChange={renameCurrentProject}
-        onNewProject={() => createNewEditProject().catch(() => {})}
-        onOpenProjectBrowser={openProjectBrowser}
+        onToggleSidebar={toggleSidebar}
         onFilesSelected={addClipsFromFiles}
-        onChooseVideo={openFilePicker}
-        onModelChange={setSelectedModel}
-        onAudioProcessingChange={setAudioProcessing}
         onOpenCopy={() => setCopyOpen(true)}
+        onAutoEdit={() => runAiEdit()}
         onRenderAndDownload={renderAndDownload}
       />
 
@@ -1853,7 +2211,10 @@ export default function App() {
           cut={cut}
           durations={activeDurations}
           error={activeError}
+          mediaSources={mediaSources}
           onChooseVideo={openFilePicker}
+          onReferencePath={addReferencePath}
+          onAddClipCopy={addClipCopy}
           onTogglePlayback={togglePlayback}
         />
 
@@ -1876,7 +2237,10 @@ export default function App() {
           }}
           onCut={cutSelected}
           onRestore={restoreSelected}
-          onClear={clearSelection}
+          canExtendLeft={clipEdgeExtensionState.canExtendLeft}
+          canExtendRight={clipEdgeExtensionState.canExtendRight}
+          onExpandLeft={expandSelectionLeft}
+          onExpandRight={expandSelectionRight}
         />
       </section>
 
@@ -1886,10 +2250,14 @@ export default function App() {
         videoTime={videoTime}
         sequenceTime={sequenceTime}
         isPlaying={isPlaying}
+        hasTranscript={hasReadyClips}
+        durations={sequenceDurations}
+        sourceDuration={sequenceSourceDuration}
         onChooseVideo={openFilePicker}
         onFilesSelected={addClipsFromFiles}
         onReferencePath={addReferencePath}
         onSelectClip={selectClip}
+        onAddClipCopy={addClipCopy}
         onReorderClip={reorderClip}
         onRemoveClip={removeClip}
         onRetryClip={retryClip}
@@ -1909,17 +2277,33 @@ export default function App() {
         />
       ) : null}
 
-      <ProjectBrowser
-        open={projectBrowserOpen}
+      <ProjectSidebar
+        open={sidebarOpen}
         projects={projectSummaries}
         currentProjectId={currentProject?.id}
         loading={projectSaveState === "loading"}
         error={projectError}
-        onClose={() => setProjectBrowserOpen(false)}
+        onClose={() => setSidebarOpen(false)}
         onOpenProject={loadEditProject}
         onNewProject={() => createNewEditProject()}
         onDeleteProject={deleteEditProject}
-        onRefresh={() => refreshProjectSummaries().catch(() => {})}
+        onOpenSettings={() => {
+          setSettingsError("");
+          setSettingsState("idle");
+          setSettingsModalOpen(true);
+        }}
+      />
+
+      <SettingsModal
+        open={settingsModalOpen}
+        state={settingsState}
+        error={settingsError}
+        modelOptions={modelOptions}
+        selectedModel={selectedModel}
+        audioProcessing={audioProcessing}
+        anthropicSettings={anthropicSettings}
+        onSave={saveSettings}
+        onClose={closeSettingsModal}
       />
     </main>
   );

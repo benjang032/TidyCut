@@ -3,6 +3,9 @@ dist/
 .DS_Store
 ._*
 *.log
+.env
+.env.*
+!.env.example
 .claude/
 .tmp-*/
 __pycache__/

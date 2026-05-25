@@ -29,6 +29,8 @@ describe("project model", () => {
     });
 
     assert.equal(document.clips[0].videoUrl, "/api/projects/media-a/video");
+    assert.equal(document.mediaSources[0].id, "clip-a");
+    assert.equal(document.mediaSources[0].mediaSourceId, "clip-a");
     assert.deepEqual(document.clips[0].cut, ["w1"]);
     assert.equal(document.clips[0].trimEnd, null);
     assert.equal("_pending" in document.clips[0], false);
@@ -54,6 +56,8 @@ describe("project model", () => {
 
     assert.equal(hydrated.activeClipId, "clip-a");
     assert.equal(hydrated.clips[0].status, "ready");
+    assert.equal(hydrated.clips[0].mediaSourceId, "clip-a");
+    assert.equal(hydrated.mediaSources.length, 1);
     assert.equal(hydrated.clips[0].videoUrl, "/api/projects/media-a/video");
     assert.equal(hydrated.clips[0].cut instanceof Set, true);
     assert.equal(hydrated.clips[0].cut.has("w1"), true);
@@ -107,6 +111,46 @@ describe("project model", () => {
 
     assert.equal(hydrated.clips[0].status, "error");
     assert.match(hydrated.clips[0].error, /not saved before transcription finished/i);
+  });
+
+  it("hydrates persisted media sources separately from timeline copies", () => {
+    const hydrated = hydrateProjectDocument({
+      id: "edit-a",
+      activeClipId: "copy-a",
+      mediaSources: [
+        {
+          id: "source-a",
+          mediaSourceId: "source-a",
+          projectId: "media-a",
+          fileName: "source.mov",
+          duration: 12,
+          trimStart: 4,
+          trimEnd: 5,
+          items: [{ id: "w1", kind: "word", text: "hello", start: 0, end: 1 }],
+          cut: ["w1"],
+        },
+      ],
+      clips: [
+        {
+          id: "copy-a",
+          mediaSourceId: "source-a",
+          projectId: "media-a",
+          fileName: "source.mov",
+          duration: 12,
+          trimStart: 4,
+          trimEnd: 5,
+          items: [{ id: "w1", kind: "word", text: "hello", start: 0, end: 1 }],
+          cut: ["w1"],
+        },
+      ],
+    });
+
+    assert.equal(hydrated.clips[0].id, "copy-a");
+    assert.equal(hydrated.clips[0].mediaSourceId, "source-a");
+    assert.equal(hydrated.mediaSources[0].id, "source-a");
+    assert.equal(hydrated.mediaSources[0].trimStart, 0);
+    assert.equal(hydrated.mediaSources[0].trimEnd, null);
+    assert.equal(hydrated.mediaSources[0].cut.size, 0);
   });
 
   it("keeps project signatures stable across server timestamp updates", () => {

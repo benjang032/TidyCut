@@ -19,6 +19,10 @@ function finiteNumber(value, fallback = 0) {
   return Number.isFinite(number) ? number : fallback;
 }
 
+function roundSeconds(value) {
+  return Number(Number(value).toFixed(3));
+}
+
 function hasKnownSourceDuration(clip) {
   return finiteNumber(clip?.duration, 0) > 0;
 }
@@ -181,6 +185,142 @@ function sequenceItemId(clipId, sourceId) {
 
 function clipStatusReady(clip) {
   return !clip?.status || clip.status === "ready";
+}
+
+function getClipSourceDuration(clip) {
+  const range = getClipTrimRange(clip);
+  const sourceDuration =
+    finiteNumber(clip?.duration, 0) ||
+    finiteNumber(clip?.source?.duration, 0) ||
+    finiteNumber(clip?.items?.at(-1)?.end, 0);
+  return Math.max(range.end, sourceDuration);
+}
+
+function selectionSet(selection) {
+  return selection instanceof Set ? selection : new Set(Array.isArray(selection) ? selection : []);
+}
+
+function buildClipItemGroups(transcriptItems) {
+  const groups = new Map();
+  for (const item of transcriptItems || []) {
+    if (!item?.clipId) continue;
+    if (!groups.has(item.clipId)) groups.set(item.clipId, []);
+    groups.get(item.clipId).push(item);
+  }
+  return groups;
+}
+
+function selectedClipTouchesKeptEdge(clipItems, transcriptCut, selection, direction) {
+  const selected = selectionSet(selection);
+  const cut = selectionSet(transcriptCut);
+  const activeIndexes = [];
+  const selectedActiveIndexes = [];
+
+  clipItems.forEach((item, index) => {
+    const isCut = cut.has(item.id);
+    if (!isCut) activeIndexes.push(index);
+    if (!isCut && selected.has(item.id)) selectedActiveIndexes.push(index);
+  });
+
+  if (!selectedActiveIndexes.length || !activeIndexes.length) return false;
+  if (direction === "left") {
+    return Math.min(...selectedActiveIndexes) === Math.min(...activeIndexes);
+  }
+  return Math.max(...selectedActiveIndexes) === Math.max(...activeIndexes);
+}
+
+export function getSelectedClipEdgeExtensionState(
+  clips = [],
+  transcriptItems = [],
+  transcriptCut = new Set(),
+  selection = new Set(),
+  stepSeconds = 0.1
+) {
+  const clipItemsById = buildClipItemGroups(transcriptItems);
+  const step = Math.max(0, finiteNumber(stepSeconds, 0.1));
+  const leftClipIds = [];
+  const rightClipIds = [];
+
+  if (step <= 0) {
+    return { canExtendLeft: false, canExtendRight: false, leftClipIds, rightClipIds };
+  }
+
+  for (const clip of clips || []) {
+    if (!clipStatusReady(clip)) continue;
+    const clipItems = clipItemsById.get(clip.id) || [];
+    if (!clipItems.length) continue;
+
+    const range = getClipTrimRange(clip);
+    const sourceDuration = getClipSourceDuration(clip);
+    if (
+      range.start > SKIP_EPSILON &&
+      selectedClipTouchesKeptEdge(clipItems, transcriptCut, selection, "left")
+    ) {
+      leftClipIds.push(clip.id);
+    }
+    if (
+      sourceDuration > range.end + SKIP_EPSILON &&
+      selectedClipTouchesKeptEdge(clipItems, transcriptCut, selection, "right")
+    ) {
+      rightClipIds.push(clip.id);
+    }
+  }
+
+  return {
+    canExtendLeft: leftClipIds.length > 0,
+    canExtendRight: rightClipIds.length > 0,
+    leftClipIds,
+    rightClipIds,
+  };
+}
+
+export function extendSelectedClipEdges(
+  clips = [],
+  transcriptItems = [],
+  transcriptCut = new Set(),
+  selection = new Set(),
+  direction,
+  stepSeconds = 0.1
+) {
+  const state = getSelectedClipEdgeExtensionState(
+    clips,
+    transcriptItems,
+    transcriptCut,
+    selection,
+    stepSeconds
+  );
+  const clipIds =
+    direction === "left"
+      ? new Set(state.leftClipIds)
+      : direction === "right"
+        ? new Set(state.rightClipIds)
+        : new Set();
+  if (!clipIds.size) return clips;
+
+  const step = Math.max(0, finiteNumber(stepSeconds, 0.1));
+  let changed = false;
+  const next = clips.map((clip) => {
+    if (!clipIds.has(clip.id)) return clip;
+
+    const range = getClipTrimRange(clip);
+    if (direction === "left") {
+      const trimStart = roundSeconds(Math.max(0, range.start - step));
+      if (Math.abs(trimStart - range.start) <= SKIP_EPSILON) return clip;
+      changed = true;
+      return { ...clip, trimStart };
+    }
+
+    const sourceDuration = getClipSourceDuration(clip);
+    const trimEnd = roundSeconds(Math.min(sourceDuration, range.end + step));
+    if (Math.abs(trimEnd - range.end) <= SKIP_EPSILON) return clip;
+    changed = true;
+    return {
+      ...clip,
+      trimEnd: Math.abs(trimEnd - sourceDuration) <= SKIP_EPSILON ? null : trimEnd,
+    };
+  });
+
+  return changed ? next : clips;
 }
 
 function getTrimmedTimeline(clip) {

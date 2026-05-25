@@ -1,5 +1,12 @@
 import { Fragment } from "react";
-import { FileVideo, Loader2, Scissors, Undo2, X } from "lucide-react";
+import {
+  FileVideo,
+  Loader2,
+  MoveLeft,
+  MoveRight,
+  Scissors,
+  Undo2,
+} from "lucide-react";
 import { formatClock, formatPauseLabel } from "../editorModel";
 
 export function TranscriptPane({
@@ -19,7 +26,10 @@ export function TranscriptPane({
   onTranscriptPointerLeave,
   onCut,
   onRestore,
-  onClear,
+  canExtendLeft,
+  canExtendRight,
+  onExpandLeft,
+  onExpandRight,
 }) {
   const hasSelection = selection.size > 0;
 
@@ -76,7 +86,15 @@ export function TranscriptPane({
       )}
 
       {hasSelection ? (
-        <SelectionBar stats={selectionStats} onCut={onCut} onRestore={onRestore} onClear={onClear} />
+        <SelectionBar
+          stats={selectionStats}
+          onCut={onCut}
+          onRestore={onRestore}
+          canExtendLeft={canExtendLeft}
+          canExtendRight={canExtendRight}
+          onExpandLeft={onExpandLeft}
+          onExpandRight={onExpandRight}
+        />
       ) : null}
     </section>
   );
@@ -148,29 +166,59 @@ function Token({ item, isSelected, isCut, isActive, activeRef, onPointerDown, on
   );
 }
 
-function SelectionBar({ stats, onCut, onRestore, onClear }) {
+function SelectionBar({
+  stats,
+  onCut,
+  onRestore,
+  canExtendLeft,
+  canExtendRight,
+  onExpandLeft,
+  onExpandRight,
+}) {
   return (
     <div className="selection-bar">
       <div className="selection-summary">
-        <span className="selection-count">{stats.size}</span>
         <span className="selection-label">{selectionLabel(stats)}</span>
       </div>
       <div className="selection-actions">
+        <button
+          className="selection-tool"
+          onClick={onExpandLeft}
+          disabled={!canExtendLeft}
+          title="Extend clip 0.1s earlier"
+          aria-label="Extend clip 0.1s earlier"
+        >
+          <MoveLeft size={15} />
+        </button>
+        <button
+          className="selection-tool"
+          onClick={onExpandRight}
+          disabled={!canExtendRight}
+          title="Extend clip 0.1s later"
+          aria-label="Extend clip 0.1s later"
+        >
+          <MoveRight size={15} />
+        </button>
         {stats.activeCount > 0 ? (
-          <button className="btn cut" onClick={onCut}>
-            <Scissors size={14} />
-            <span>Cut {stats.activeCount}</span>
+          <button
+            className="selection-tool selection-tool-cut"
+            onClick={onCut}
+            title="Cut selection"
+            aria-label="Cut selection"
+          >
+            <Scissors size={15} />
           </button>
         ) : null}
         {stats.cutCount > 0 ? (
-          <button className="btn ghost" onClick={onRestore}>
-            <Undo2 size={14} />
-            <span>Restore {stats.cutCount}</span>
+          <button
+            className="selection-tool"
+            onClick={onRestore}
+            title="Restore selection"
+            aria-label="Restore selection"
+          >
+            <Undo2 size={15} />
           </button>
         ) : null}
-        <button className="btn icon" onClick={onClear} title="Clear (Esc)">
-          <X size={14} />
-        </button>
       </div>
     </div>
   );
@@ -181,5 +229,5 @@ function selectionLabel(stats) {
   if (stats.words) parts.push(`${stats.words} word${stats.words === 1 ? "" : "s"}`);
   if (stats.gaps) parts.push(`${stats.gaps} pause${stats.gaps === 1 ? "" : "s"}`);
   if (!parts.length) return `${stats.size} selected`;
-  return `${parts.join(", ")} selected`;
+  return `${parts.join(" ")} selected`;
 }

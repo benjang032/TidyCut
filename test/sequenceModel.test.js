@@ -6,8 +6,10 @@ import {
   buildSequencePlaybackEntries,
   getClipTimeline,
   buildSequenceTranscriptItems,
+  extendSelectedClipEdges,
   getFirstReadyPlaybackEntry,
   getNextReadyPlaybackEntry,
+  getSelectedClipEdgeExtensionState,
   getSequenceDurations,
   getSequencePlainText,
   getSequenceTranscriptCut,
@@ -453,6 +455,127 @@ describe("sequence model", () => {
         end: item.end,
       })),
       [{ id: "clip-boundary-right::w1", start: 2, end: 3 }]
+    );
+  });
+
+  it("extends clip trim left only when selection touches the kept left edge", () => {
+    const clips = [
+      {
+        id: "clip-edge-left",
+        projectId: "project-edge-left",
+        fileName: "left.mov",
+        duration: 8,
+        trimStart: 2,
+        trimEnd: 5,
+        status: "ready",
+        items: [
+          { id: "w1", kind: "word", text: "first", start: 2, end: 3 },
+          { id: "w2", kind: "word", text: "middle", start: 3, end: 4 },
+        ],
+        cut: new Set(),
+      },
+    ];
+    const transcriptItems = buildSequenceTranscriptItems(clips);
+
+    assert.equal(
+      getSelectedClipEdgeExtensionState(
+        clips,
+        transcriptItems,
+        new Set(),
+        new Set(["clip-edge-left::w2"])
+      ).canExtendLeft,
+      false
+    );
+
+    assert.equal(
+      getSelectedClipEdgeExtensionState(
+        clips,
+        transcriptItems,
+        new Set(),
+        new Set(["clip-edge-left::w1"])
+      ).canExtendLeft,
+      true
+    );
+
+    const next = extendSelectedClipEdges(
+      clips,
+      transcriptItems,
+      new Set(),
+      new Set(["clip-edge-left::w1"]),
+      "left",
+      0.1
+    );
+    assert.equal(next[0].trimStart, 1.9);
+  });
+
+  it("extends clip trim right when only cut items remain to the right", () => {
+    const clips = [
+      {
+        id: "clip-edge-right",
+        projectId: "project-edge-right",
+        fileName: "right.mov",
+        duration: 8,
+        trimStart: 2,
+        trimEnd: 5,
+        status: "ready",
+        items: [
+          { id: "w1", kind: "word", text: "first", start: 2, end: 3 },
+          { id: "w2", kind: "word", text: "keeper", start: 3, end: 4 },
+          { id: "w3", kind: "word", text: "cut", start: 4, end: 5 },
+        ],
+        cut: new Set(["w3"]),
+      },
+    ];
+    const transcriptItems = buildSequenceTranscriptItems(clips);
+    const transcriptCut = getSequenceTranscriptCut(clips, transcriptItems);
+    const selection = new Set(["clip-edge-right::w2"]);
+
+    assert.equal(
+      getSelectedClipEdgeExtensionState(clips, transcriptItems, transcriptCut, selection)
+        .canExtendRight,
+      true
+    );
+
+    const next = extendSelectedClipEdges(
+      clips,
+      transcriptItems,
+      transcriptCut,
+      selection,
+      "right",
+      0.1
+    );
+    assert.equal(next[0].trimEnd, 5.1);
+  });
+
+  it("does not extend clip trim right when active items remain to the right", () => {
+    const clips = [
+      {
+        id: "clip-edge-blocked",
+        projectId: "project-edge-blocked",
+        fileName: "blocked.mov",
+        duration: 8,
+        trimStart: 2,
+        trimEnd: 5,
+        status: "ready",
+        items: [
+          { id: "w1", kind: "word", text: "first", start: 2, end: 3 },
+          { id: "w2", kind: "word", text: "middle", start: 3, end: 4 },
+          { id: "w3", kind: "word", text: "last", start: 4, end: 5 },
+        ],
+        cut: new Set(),
+      },
+    ];
+    const transcriptItems = buildSequenceTranscriptItems(clips);
+    const selection = new Set(["clip-edge-blocked::w2"]);
+
+    assert.equal(
+      getSelectedClipEdgeExtensionState(clips, transcriptItems, new Set(), selection)
+        .canExtendRight,
+      false
+    );
+    assert.equal(
+      extendSelectedClipEdges(clips, transcriptItems, new Set(), selection, "right", 0.1),
+      clips
     );
   });
 });
